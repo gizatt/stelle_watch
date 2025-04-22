@@ -19,7 +19,7 @@ Arduino_RGB_Display *panel = new Arduino_RGB_Display(
 Arduino_Canvas *gfx = new Arduino_Canvas(480, 480, panel);
 
 // === Clock Config ===
-const float SECONDS_PER_SECOND = 60.0 * 10.0f;
+const float SECONDS_PER_SECOND = 10.0f;
 const int CENTER_X = 240;
 const int CENTER_Y = 240;
 const int RADIUS = 200;
@@ -141,9 +141,10 @@ void loop() {
     lastUpdate = now;
 
     float elapsedSeconds = SECONDS_PER_SECOND * now / 1000.0f;
-    int hours = (int)(elapsedSeconds / 60 / 60) % 12;
-    int minutes = ((int)elapsedSeconds / 60) % 60;
-    int seconds = (int)elapsedSeconds;
+    float seconds = (int)elapsedSeconds;
+    float minutes = seconds / 60.0f;
+    float hours = minutes / 60.0f;
+    
 
     gfx->fillScreen(BLACK);
 
@@ -179,9 +180,9 @@ void loop() {
     }
 
     // Calculate hand angles
-    float hourAngle = ((hours % 12) + minutes / 60.0f) * 30.0f;
-    float minuteAngle = minutes * 6.0f;
-    float secondAngle = seconds * 6.0f;
+    float hourAngle = 360.0f * hours / 12.0f;
+    float minuteAngle = 360.0f * minutes / 60.0f;
+    float secondAngle = 360.0f * seconds / 60.0f;
 
     // Draw hands
     drawHand(hourAngle, RADIUS * 0.5, HOUR_HAND_COLOR, 6);
