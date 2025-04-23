@@ -1,62 +1,74 @@
+import numpy as np
 import pygame
 import time
-import numpy as np
-
-import matplotlib.pyplot as plt
+from numba import njit
 
 # Parameters
 WIDTH, HEIGHT = 480, 480
 N_PARTICLES = 5000
-GRID_SIZE = 16
-G = 1e-4
-DT = 0.01
+CENTER_PARTICLE_MASS = 500
+G = 1e-5
+DT = 0.05
 
-# Particle arrays (struct-of-arrays layout)
+# Particle arrays
 pos = np.zeros((N_PARTICLES, 2), dtype=np.float32)
 vel = np.zeros((N_PARTICLES, 2), dtype=np.float32)
 force = np.zeros((N_PARTICLES, 2), dtype=np.float32)
-mass_grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
-com_grid = np.zeros((GRID_SIZE, GRID_SIZE, 2), dtype=np.float32)
+
+@njit
+def compute_brute_forces(pos, force, G):
+    N = pos.shape[0]
+    for i in range(N):
+        fx, fy = 0.0, 0.0
+        xi, yi = pos[i]
+        for j in range(N):
+            if i == j:
+                continue
+            dx = pos[j, 0] - xi
+            dy = pos[j, 1] - yi
+            r2 = dx * dx + dy * dy + 1e-4
+            inv_r3 = 1.0 / (r2 * np.sqrt(r2))
+            f = G * inv_r3
+            fx += f * dx
+            fy += f * dy
+        force[i, 0] = fx
+        force[i, 1] = fy
 
 def init_particles():
     r = np.abs(np.random.normal(0.5, 0.25, N_PARTICLES))
     theta = np.random.uniform(0, 2 * np.pi, N_PARTICLES)
     pos[:, 0] = r * np.cos(theta)
     pos[:, 1] = r * np.sin(theta)
-    v_mag = np.sqrt(G * N_PARTICLES / r) * np.random.normal(1., 0.05, N_PARTICLES)
+    v_mag = np.sqrt(G * CENTER_PARTICLE_MASS / r) * np.random.normal(1., 0.05, N_PARTICLES)
     vel[:, 0] = -v_mag * np.sin(theta)
     vel[:, 1] = v_mag * np.cos(theta)
     force[:] = 0
 
 def dynamics_update():
-    global force, vel, pos, mass_grid, com_grid
-    force.fill(0)
-    r_norm = np.linalg.norm(pos, axis=1, keepdims=True) + 1e-2
+    global pos, vel, force
+    compute_brute_forces(pos, force, G)
+    r_norm = np.linalg.norm(pos, axis=1, keepdims=True) + 0.1
 
-    # Update mass grid
-    bin_idx = np.clip(((pos + 1) * GRID_SIZE / 2).astype(np.int32), 0, GRID_SIZE - 1)
-    mass_grid.fill(0)
-    com_grid.fill(0)
-    for xy, bin in zip(pos, bin_idx):
-        mass_grid[bin[0], bin[1]] += 1
-        com_grid[bin[0], bin[1], :] += xy
+    # Attract towards the center
+    force -= G * CENTER_PARTICLE_MASS * pos / r_norm**3
 
-    # Start with center attraction
-    #force[:] = -G * N_PARTICLES * pos / r_norm**3
+    # Apply a torque to the particles to keep them in a circular orbit
+    # force[:, 0] -= 0.001 * pos[:, 1] / r_norm.flatten()
+    # force[:, 1] += 0.001 * pos[:, 0] / r_norm.flatten()
 
-    # And attract to each point in the mass grid
-    for i in range(GRID_SIZE):
-        for j in range(GRID_SIZE):
-            if mass_grid[i, j] > 1E-3:
-                com = com_grid[i, j] / mass_grid[i, j]
-                diff = com - pos
-                dist = np.linalg.norm(diff, axis=1, keepdims=True)
-                mask = (dist > 0.01).flatten()
-                force[mask] += G * mass_grid[i, j] * diff[mask] / dist[mask]**3
+    #force += -pos * np.clip(r_norm - 0.6, 0, None) / r_norm
+    #force -= vel * np.clip(np.linalg.norm(vel, axis=1, keepdims=True) - 0.5, 0, None) / np.linalg.norm(vel, axis=1, keepdims=True)
+    
 
-    vel = vel + force * DT - 0.01 * np.clip(r_norm - 0.8, 0., np.inf) * pos / r_norm 
-    pos = pos + vel * DT
+    vel[:] += force * DT
+    pos[:] += vel * DT
 
+    needs_reset = np.logical_or(np.linalg.norm(pos, axis=1) > 1.0, np.linalg.norm(vel, axis=1) > 0.5)
+    #needs_reset = np.logical_or(needs_reset, np.linalg.norm(pos, axis=1) < 0.02)
+    pos[needs_reset] = np.random.normal(0, 0.25, (np.sum(needs_reset), 2))
+    rnorm = np.linalg.norm(pos[needs_reset], axis=1) + 0.1
+    vel[needs_reset, 0] = -pos[needs_reset, 1] / rnorm * 0.4
+    vel[needs_reset, 1] = pos[needs_reset, 0] / rnorm * 0.4
 
 
 def draw_particles():
@@ -65,9 +77,9 @@ def draw_particles():
     norm_speeds = np.clip(speeds / vmax, 0, 1)
 
     rgb = np.zeros((N_PARTICLES, 3), dtype=np.uint8)
-    rgb[:, 0] = (255 * norm_speeds).astype(np.uint8)
-    rgb[:, 1] = (128 * (1 - norm_speeds)).astype(np.uint8)
-    rgb[:, 2] = (255 * (1 - norm_speeds)).astype(np.uint8)
+    rgb[:, 0] = (127  + 127 * norm_speeds).astype(np.uint8)
+    rgb[:, 1] = (255 * (1 - norm_speeds)).astype(np.uint8)
+    rgb[:, 2] = (255 * (1 - 0.7 * norm_speeds)).astype(np.uint8)
 
     screen_xy = np.floor((pos + 1) * WIDTH // 2).astype(np.int32)
     img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
@@ -79,10 +91,7 @@ def draw_particles():
     pygame.surfarray.blit_array(screen, img.swapaxes(0, 1))
     pygame.display.flip()
 
-
-
 # Main loop
-# Setup pygame
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
@@ -106,6 +115,6 @@ while running:
 
     print(f"Dynamics: {(t1 - t0)*1000:.1f} ms | Draw: {(t2 - t1)*1000:.1f} ms | Total: {(t2 - frame_start)*1000:.1f} ms")
 
-    clock.tick(120)
+    clock.tick(60)
 
 pygame.quit()
