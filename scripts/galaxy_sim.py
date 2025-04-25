@@ -6,8 +6,8 @@ from numba import njit
 # Parameters
 WIDTH, HEIGHT = 480, 480
 N_PARTICLES = 5000
-CENTER_PARTICLE_MASS = 500
-G = 1e-5
+CENTER_PARTICLE_MASS = 1000
+G = 1e-4
 DT = 0.05
 
 # Particle arrays
@@ -47,6 +47,7 @@ def init_particles():
 def dynamics_update():
     global pos, vel, force
     compute_brute_forces(pos, force, G)
+    force *= 0.1
     r_norm = np.linalg.norm(pos, axis=1, keepdims=True) + 0.1
 
     # Attract towards the center
@@ -63,12 +64,13 @@ def dynamics_update():
     vel[:] += force * DT
     pos[:] += vel * DT
 
-    needs_reset = np.logical_or(np.linalg.norm(pos, axis=1) > 1.0, np.linalg.norm(vel, axis=1) > 0.5)
-    #needs_reset = np.logical_or(needs_reset, np.linalg.norm(pos, axis=1) < 0.02)
-    pos[needs_reset] = np.random.normal(0, 0.25, (np.sum(needs_reset), 2))
-    rnorm = np.linalg.norm(pos[needs_reset], axis=1) + 0.1
-    vel[needs_reset, 0] = -pos[needs_reset, 1] / rnorm * 0.4
-    vel[needs_reset, 1] = pos[needs_reset, 0] / rnorm * 0.4
+    needs_reset = np.logical_or(np.linalg.norm(pos, axis=1) > 1.0, np.linalg.norm(vel, axis=1) > 0.75)
+    needs_reset = np.logical_or(needs_reset, np.linalg.norm(pos, axis=1) < 0.02)
+    pos[needs_reset] = np.roll(pos, 64, axis=0)[needs_reset] + np.random.normal(0, 0.01, (np.sum(needs_reset), 2))
+    vel[needs_reset] = np.roll(vel, 64, axis=0)[needs_reset] + np.random.normal(0, 0.01, (np.sum(needs_reset), 2))
+    #rnorm = np.linalg.norm(pos[needs_reset], axis=1) + 0.1
+    #vel[needs_reset, 0] = -pos[needs_reset, 1] * np.sqrt(G * CENTER_PARTICLE_MASS / rnorm) / rnorm
+    #vel[needs_reset, 1] = pos[needs_reset, 0] * np.sqrt(G * CENTER_PARTICLE_MASS / rnorm) / rnorm
 
 
 def draw_particles():
@@ -77,9 +79,9 @@ def draw_particles():
     norm_speeds = np.clip(speeds / vmax, 0, 1)
 
     rgb = np.zeros((N_PARTICLES, 3), dtype=np.uint8)
-    rgb[:, 0] = (127  + 127 * norm_speeds).astype(np.uint8)
-    rgb[:, 1] = (255 * (1 - norm_speeds)).astype(np.uint8)
-    rgb[:, 2] = (255 * (1 - 0.7 * norm_speeds)).astype(np.uint8)
+    rgb[:, 0] = (vel[:, 0] * 127 + 127).astype(np.uint8)
+    rgb[:, 0] = (vel[:, 0] * 127 + 127).astype(np.uint8)
+    rgb[:, 2] = (255 * norm_speeds).astype(np.uint8)
 
     screen_xy = np.floor((pos + 1) * WIDTH // 2).astype(np.int32)
     img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
