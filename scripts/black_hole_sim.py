@@ -15,7 +15,14 @@ CENTER_MASS = 1000
 G = 1e-4
 TARGET_DT = 0.01
 REAL_TIME_FACTOR = 1.0
-PADDING = 1E-2
+PADDING = 1E-4
+VELOCITY_DAMPING = 0.01
+INITIAL_VELOCITY_PENALTY = 0.5
+INITIAL_VELOCITY_VARIANCE = 0.1
+MIN_DISTANCE = 0.02
+MAX_SPEED = 2.0
+EXPECTED_LIFTIME = 5
+N_SPIRALS = 6
 
 # State
 ND = 3
@@ -31,7 +38,7 @@ class ParticleSim:
         self.forces = np.zeros((ND, N_PARTICLES))
         self.colors = np.zeros((3, N_PARTICLES))
 
-        self.set_normal_vector([1.0, 1.0, 1.0])
+        self.set_normal_vector([0.5, 1.0, 0.85])
 
     def set_normal_vector(self, normal_vector):
         self.normal_vector = normal_vector / np.linalg.norm(normal_vector)
@@ -47,7 +54,7 @@ class ParticleSim:
             x_axis,
             y_axis,
             self.normal_vector
-        ])
+        ]).T
 
     @property
     def n_particles(self):
@@ -57,20 +64,19 @@ class ParticleSim:
         self.initialize_particles(np.full((N_PARTICLES,), True))
 
     def initialize_particles(self, mask):
-        N_SPIRALS = 8
-        theta = np.random.normal(0, 0.1, N_PARTICLES) + np.random.randint(0, N_SPIRALS, N_PARTICLES) * (2 * np.pi / N_SPIRALS)
+        theta = np.random.normal(0, 0.05, N_PARTICLES) + np.random.randint(0, N_SPIRALS, N_PARTICLES) * (2 * np.pi / N_SPIRALS)
         # Sample in coordinates of dominant plane of rotation
-        r = np.abs(np.random.normal(0.75, 0.1, N_PARTICLES))
+        r = np.abs(np.random.normal(0.75, 0.05, N_PARTICLES))
         u = r * np.cos(theta)
         v = r * np.sin(theta)
         uv = np.zeros((ND, N_PARTICLES)) 
         uv[0, :] = u
         uv[1, :] = v
         if ND >= 3:
-            uv[2, :] = np.random.normal(0, 0.01, N_PARTICLES)
+            uv[2, :] = np.random.normal(0, 0.05, N_PARTICLES)
         self.positions[:, mask] = self.world_Q_planar @ uv[:, mask]
         
-        speed = np.sqrt(G * CENTER_MASS / r) * np.random.normal(1., 0.05, N_PARTICLES)
+        speed = INITIAL_VELOCITY_PENALTY * np.sqrt(G * CENTER_MASS / r) * np.random.normal(1., INITIAL_VELOCITY_VARIANCE, N_PARTICLES)
         udot = -speed * np.sin(theta)
         vdot = speed * np.cos(theta)
         uv_dot = np.zeros((ND, N_PARTICLES))
@@ -81,7 +87,6 @@ class ParticleSim:
         self.velocities[:, mask] = self.world_Q_planar @ uv_dot[:, mask]
 
         self.colors[:, mask] = plt.get_cmap("Blues")(np.random.uniform(0.0, 1.0, N_PARTICLES))[mask, :3].T
-
 
     def dynamics_update(self, t):
         if t - self.last_dynamics_update < TARGET_DT:
@@ -94,15 +99,16 @@ class ParticleSim:
 
         r_norm = np.linalg.norm(self.positions, axis=0) + PADDING
         # GMM / R^2   *  [pos / |pos|]
-        self.forces = -G * CENTER_MASS * self.positions / r_norm**3
+        self.forces = -G * CENTER_MASS * self.positions / r_norm**3 - self.velocities * VELOCITY_DAMPING
         self.velocities += self.forces * dt
         self.positions += self.velocities * dt
 
         # Respawn particles that have diverged.
-        too_far = np.linalg.norm(self.positions, axis=0) > 1.0
-        too_close = np.linalg.norm(self.positions, axis=0) < 0.1
-        too_fast = np.linalg.norm(self.velocities, axis=0) > 1.0
-        random = np.random.binomial(1, 0.01, N_PARTICLES)
+        too_far = np.linalg.norm(self.positions, axis=0) > 2.0
+        too_close = np.linalg.norm(self.positions, axis=0) < MIN_DISTANCE
+        too_fast = np.linalg.norm(self.velocities, axis=0) > MAX_SPEED
+        random = np.random.binomial(1, dt / EXPECTED_LIFTIME, N_PARTICLES) == 1
+        print(f"too_far: {np.sum(too_far)}, too_close: {np.sum(too_close)}, too_fast: {np.sum(too_fast)}, random: {np.sum(random)}")
         self.initialize_particles(too_far | too_close | too_fast | random)
 
 
@@ -132,7 +138,7 @@ class ParticleDrawing:
 
         # Update the view position.
         if ND == 3:
-            view_direction = np.array([np.sin(0.1*t)*0.1, np.sin(0.2*t)*0.1, 0.9 + 0.1 * np.cos(0.3*t)])
+            view_direction = np.array([np.sin(0.2*t)*0.3, np.sin(0.3*t)*0.3, 0.9 + 0.1 * np.cos(0.3*t)])
             view_direction /= np.linalg.norm(view_direction)
             # Get two vectors orthogonal to the view direction.
             x_axis = np.array([1, 0, 0])
@@ -155,12 +161,20 @@ class ParticleDrawing:
         uv = ((uv.T + self.center).T).astype(np.int32)
         
         speeds = np.linalg.norm(sim.velocities, axis=0)
-        max_speed = 0.7
-
+        
         fast_color = np.array([1.0, 0.4, 0.1])
-        speed_ratio = np.clip(speeds / max_speed, 0, 1)**2.
+        speed_ratio = np.clip(speeds / (MAX_SPEED * 0.5), 0, 1)**2.
         colors = speed_ratio[:, None] * fast_color + sim.colors.T * (1. - speed_ratio[:, None])
-            
+
+        #if ND == 3:
+            # TODO: Darken ones that are "down" (-y)
+            # down_dir = -sim.normal_vector
+            # down_amount = down_dir.dot(sim.positions)
+            # #max_down = np.max(down_amount)
+            # #min_down = np.min(down_amount)
+            # #down_amount = (down_amount - min_down) / (max_down - min_down)
+            # colors *= down_amount[:, None]
+
         img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
         mask = (uv[0, :] >= 0) & (uv[0, :] < WIDTH) & \
             (uv[1, :] >= 0) & (uv[1, :] < HEIGHT)
