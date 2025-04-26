@@ -1,6 +1,6 @@
+#include "ParticleSim.h"
 #include <Arduino_GFX_Library.h>
 #include <math.h>
-#include "ParticleSim.h"
 
 // Display setup (same as yours)
 Arduino_DataBus *bus =
@@ -11,25 +11,207 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     40 /* DE */, 39 /* VSYNC */, 38 /* HSYNC */, 41 /* PCLK */, 46 /* R0 */,
     3 /* R1 */, 8 /* R2 */, 18 /* R3 */, 17 /* R4 */, 14 /* G0 */, 13 /* G1 */,
     12 /* G2 */, 11 /* G3 */, 10 /* G4 */, 9 /* G5 */, 5 /* B0 */, 45 /* B1 */,
-    48 /* B2 */, 47 /* B3 */, 21 /* B4 */, 1 /* hsync_polarity */, 10, 8, 10,
-    1 /* vsync_polarity */, 10, 8, 10);
+    48 /* B2 */, 47 /* B3 */, 21 /* B4 */, 1 /* hsync_polarity */,
+    10 /* hsync front porch */, 8 /* hsync pulse width */,
+    10 /*hsync back porch*/, 1 /* vsync_polarity */, 10 /* vsync front porch */,
+    8 /* vsync pulse width */, 10 /* vsync back porch*/, 0 /* pckl active neg */,
+    GFX_NOT_DEFINED /* prefer speed */, false /* use big endian */);
 
+
+#define BACKLIGHT_PIN 6
+
+
+// // This is translated to
+// // WRITE_COMMAND_8, 0xFF,
+// // WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x10,
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xFF, {0x77, 0x01, 0x00, 0x00, 0x10}), \
+// // This is translated to WRITE_C8_D1,6 0xC0, 0x3B, 0x00
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xC0, {0x3B, 0x00}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xC1, {0x0D, 0x02}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xC2, {0x31, 0x05}), \
+// // And this is translated WRITE_C8_D8, 0xCD, 0x00
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xCD, {0x00}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB0, {0x00, 0x11, 0x18, 0x0E, 0x11, 0x06, 0x07, 0x08, 0x07, 0x22, 0x04, 0x12, 0x0F, 0xAA, 0x31, 0x18}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB1, {0x00, 0x11, 0x19, 0x0E, 0x12, 0x07, 0x08, 0x08, 0x08, 0x22, 0x04, 0x11, 0x11, 0xA9, 0x32, 0x18}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xFF, {0x77, 0x01, 0x00, 0x00, 0x11}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB0, {0x60}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB1, {0x32}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB2, {0x07}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB3, {0x80}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB5, {0x49}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB7, {0x85}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xB8, {0x21}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xC1, {0x78}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xC2, {0x78}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE0, {0x00, 0x1B, 0x02}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE1, {0x08, 0xA0, 0x00, 0x00, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x44, 0x44}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE2, {0x11, 0x11, 0x44, 0x44, 0xED, 0xA0, 0x00, 0x00, 0xEC, 0xA0, 0x00, 0x00}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE3, {0x00, 0x00, 0x11, 0x11}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE4, {0x44, 0x44}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE5, {0x0A, 0xE9, 0xD8, 0xA0, 0x0C, 0xEB, 0xD8, 0xA0, 0x0E, 0xED, 0xD8, 0xA0, 0x10, 0xEF, 0xD8, 0xA0}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE6, {0x00, 0x00, 0x11, 0x11}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE7, {0x44, 0x44}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE8, {0x09, 0xE8, 0xD8, 0xA0, 0x0B, 0xEA, 0xD8, 0xA0, 0x0D, 0xEC, 0xD8, 0xA0, 0x0F, 0xEE, 0xD8, 0xA0}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xEB, {0x02, 0x00, 0xE4, 0xE4, 0x88, 0x00, 0x40}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xEC, {0x3C, 0x00}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xED, {0xAB, 0x89, 0x76, 0x54, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x20, 0x45, 0x67, 0x98, 0xBA}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xFF, {0x77, 0x01, 0x00, 0x00, 0x13}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xE5, {0xE4}), \
+// ESP_PANEL_LCD_CMD_WITH_8BIT_PARAM(0, 0xFF, {0x77, 0x01, 0x00, 0x00, 0x00}), \
+// ESP_PANEL_LCD_CMD_WITH_NONE_PARAM(120, 0x11), \
+
+// https://focuslcds.com/wp-content/uploads/Drivers/ST7701S.pdf?srsltid=AfmBOopYK3aCfyL_tB86MdP0n324VHZnOGzSyoDPjkvCC9OespEM7N0c
+static const uint8_t st7701_my_init_operations[] = {
+  BEGIN_WRITE,
+  WRITE_COMMAND_8, 0xFF,
+  WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x13,
+  WRITE_C8_D8, 0xEF, 0x08,
+
+  WRITE_COMMAND_8, 0xFF,
+  WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x10,
+
+  WRITE_C8_D16, 0xC0, 0x3B, 0x00,
+
+  WRITE_C8_D16, 0xC1, 0x10, 0x0C,
+
+  WRITE_C8_D16, 0xC2, 0x07, 0x0A,
+
+  WRITE_C8_D8, 0xC7, 0x00,
+
+  WRITE_C8_D8, 0xCC, 0x10,
+
+  WRITE_COMMAND_8, 0xB0,
+  WRITE_BYTES, 16,
+  0x05, 0x12, 0x98, 0x0E,
+  0x0F, 0x07, 0x07, 0x09,
+  0x09, 0x23, 0x05, 0x52,
+  0x0F, 0x67, 0x2C, 0x11,
+
+  WRITE_COMMAND_8, 0xB1,
+  WRITE_BYTES, 16,
+  0x0B, 0x11, 0x97, 0x0C,
+  0x12, 0x06, 0x06, 0x08,
+  0x08, 0x22, 0x03, 0x51,
+  0x11, 0x66, 0x2B, 0x0F,
+
+  WRITE_COMMAND_8, 0xFF,
+  WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x11,
+
+  WRITE_C8_D8, 0xB0, 0x5D,
+  WRITE_C8_D8, 0xB1, 0x2D,
+  WRITE_C8_D8, 0xB2, 0x81,
+  WRITE_C8_D8, 0xB3, 0x80,
+
+  WRITE_C8_D8, 0xB5, 0x4E,
+
+  WRITE_C8_D8, 0xB7, 0x85,
+  WRITE_C8_D8, 0xB8, 0x20,
+
+  WRITE_C8_D8, 0xC1, 0x78,
+  WRITE_C8_D8, 0xC2, 0x78,
+
+  WRITE_C8_D8, 0xD0, 0x88,
+
+  WRITE_COMMAND_8, 0xE0,
+  WRITE_BYTES, 3, 0x00, 0x00, 0x02,
+
+  WRITE_COMMAND_8, 0xE1,
+  WRITE_BYTES, 11,
+  0x06, 0x30, 0x08, 0x30,
+  0x05, 0x30, 0x07, 0x30,
+  0x00, 0x33, 0x33,
+
+  WRITE_COMMAND_8, 0xE2,
+  WRITE_BYTES, 12,
+  0x11, 0x11, 0x33, 0x33,
+  0xF4, 0x00, 0x00, 0x00,
+  0xF4, 0x00, 0x00, 0x00,
+
+  WRITE_COMMAND_8, 0xE3,
+  WRITE_BYTES, 4, 0x00, 0x00, 0x11, 0x11,
+
+  WRITE_C8_D16, 0xE4, 0x44, 0x44,
+
+  WRITE_COMMAND_8, 0xE5,
+  WRITE_BYTES, 16,
+  0x0D, 0xF5, 0x30, 0xF0,
+  0x0F, 0xF7, 0x30, 0xF0,
+  0x09, 0xF1, 0x30, 0xF0,
+  0x0B, 0xF3, 0x30, 0xF0,
+
+  WRITE_COMMAND_8, 0xE6,
+  WRITE_BYTES, 4, 0x00, 0x00, 0x11, 0x11,
+
+  WRITE_C8_D16, 0xE7, 0x44, 0x44,
+
+  WRITE_COMMAND_8, 0xE8,
+  WRITE_BYTES, 16,
+  0x0C, 0xF4, 0x30, 0xF0,
+  0x0E, 0xF6, 0x30, 0xF0,
+  0x08, 0xF0, 0x30, 0xF0,
+  0x0A, 0xF2, 0x30, 0xF0,
+
+  WRITE_C8_D16, 0xE9, 0x36, 0x01,
+
+  WRITE_COMMAND_8, 0xEB,
+  WRITE_BYTES, 7,
+  0x00, 0x01, 0xE4, 0xE4,
+  0x44, 0x88, 0x40,
+
+  WRITE_COMMAND_8, 0xED,
+  WRITE_BYTES, 16,
+  0xFF, 0x10, 0xAF, 0x76,
+  0x54, 0x2B, 0xCF, 0xFF,
+  0xFF, 0xFC, 0xB2, 0x45,
+  0x67, 0xFA, 0x01, 0xFF,
+
+  WRITE_COMMAND_8, 0xEF,
+  WRITE_BYTES, 6,
+  0x08, 0x08, 0x08, 0x45,
+  0x3F, 0x54,
+
+  WRITE_COMMAND_8, 0xFF,
+  WRITE_BYTES, 5, 0x77, 0x01, 0x00, 0x00, 0x00,
+
+  WRITE_C8_D16, 0xE8, 0x00, 0x0E,
+
+  WRITE_COMMAND_8, 0x20,   // 0x20 normal, 0x21 inverted
+  // This is *almost* right. But I know we sent 565 values, so I think the magic internal
+  // screen registers are configured incorrectly... need to figure out how to perfectly replicate
+  // the stuff sent by the manufactuer
+  WRITE_C8_D8, 0x3A, 0x70, // 0x70 RGB888, 0x60 RGB666, 0x50 RGB565
+
+  WRITE_COMMAND_8, 0x11,
+  END_WRITE,
+
+  DELAY, 120, // ms
+
+  BEGIN_WRITE,
+  WRITE_COMMAND_8, 0x29, // Display On
+  END_WRITE};
+
+
+// type 3, 4, 7: white screen
+// type 6: mostly right. went weirdly green for a while. flashed with a different
+// type, power cycled, reflashed type 6, now it's white background instead of black???
+// type 8 & 9: black background, random white and green lines being drawn. it's allllmost right. wrong clock?
+// 
 Arduino_RGB_Display *panel = new Arduino_RGB_Display(
     480, 480, rgbpanel, 0, false, bus, GFX_NOT_DEFINED,
-    st7701_type6_init_operations, sizeof(st7701_type6_init_operations));
+    st7701_my_init_operations, sizeof(st7701_my_init_operations));
 Arduino_Canvas *gfx = new Arduino_Canvas(480, 480, panel);
 
 ParticleSim *sim = new ParticleSim();
 Mat3xNf last_positions;
 
 double start_t = 0.0;
-inline double get_now() {
-  return ((double)millis()) / 1000.0f;
-}
+inline double get_now() { return ((double)millis()) / 1000.0f; }
 
 void setup() {
   Serial.begin(115200);
 
+  pinMode(BACKLIGHT_PIN, OUTPUT);
+  digitalWrite(BACKLIGHT_PIN, 0);
 
   if (!psramFound()) {
     while (1) {
@@ -65,11 +247,11 @@ inline void draw_pos(const Vec3f &p, uint16_t color) {
   // gfx->drawPixel(u-1, v, color);
   // gfx->drawPixel(u, v+1, color);
   // gfx->drawPixel(u, v-1, color);
-  }
+}
 
 void loop() {
   double t = get_now();
-  
+
   sim->dynamics_update(t);
 
   if (t - last_draw >= 1. / 30.0) {
@@ -77,7 +259,6 @@ void loop() {
     n_frames++;
     double fps = n_frames / (t - start_t);
     Serial.printf("FPS: %.2f\n", fps);
-    
 
     // We instead undraw previous pixels to save screen clearing time.
     // gfx->fillScreen(BLACK);
