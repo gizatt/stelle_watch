@@ -1,0 +1,4 @@
+
+Code for driving a ESP32-S2 WROOM board attached to a 2.8" round LCD through a ST7701. Includes vendor-specific config for the obscure screen I'm using, which I extracted from the Waveshare sample code. Works with PlatformIO/Arduino framework rather than ESP-IDF since that's what I'm familiar with and find easier to work with.
+
+Screen and board: https://www.amazon.com/dp/B0D89R93NM?ref=ppx_yo2ov_dt_b_fed_asin_title
