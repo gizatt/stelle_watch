@@ -16,7 +16,6 @@ Arduino_RGB_Display *panel = new Arduino_RGB_Display(
 Arduino_Canvas *gfx = new Arduino_Canvas(480, 480, panel);
 
 ParticleSim *sim = new ParticleSim();
-Mat3xNf last_positions;
 
 double start_t = 0.0;
 inline double get_now() { return ((double)millis()) / 1000.0f; }
@@ -40,8 +39,6 @@ void setup() {
   gfx->fillScreen(BLACK);
 
   sim->initialize_all_particles();
-  last_positions.resize(3, N_PARTICLES);
-  last_positions.setZero();
   start_t = get_now();
 }
 
@@ -49,9 +46,7 @@ void setup() {
 int n_frames = 0;
 double last_draw = 0.0;
 
-inline void draw_pos(const Vec3f &p, uint16_t color) {
-  int u = (int)(p(0) * 100 + 240);
-  int v = (int)(p(1) * 100 + 240);
+inline void draw_pos(uint16_t u, uint16_t v, uint16_t color) {
   if (u < 1 || u >= 479 || v < 0 || v >= 479) {
     return;
   }
@@ -68,7 +63,7 @@ void loop() {
 
   sim->dynamics_update(t);
 
-  if (t - last_draw >= 1. / 30.0) {
+  if (t - last_draw >= DRAW_DT) {
     last_draw = t;
     n_frames++;
     double fps = n_frames / (t - start_t);
@@ -77,20 +72,16 @@ void loop() {
     // We instead undraw previous pixels to save screen clearing time.
     // gfx->fillScreen(BLACK);
 
-    const auto &positions = sim->get_positions();
-    const auto &colors = sim->get_colors();
     for (int i = 0; i < N_PARTICLES; ++i) {
       // Undraw last position.
-      const auto &last_pos = last_positions.col(i);
-      draw_pos(last_positions.col(i), BLACK);
-
-      // Draw new position.
-      const auto &pos = positions.col(i);
-      const auto &color = colors.col(i);
-      draw_pos(pos, gfx->color565(color(0), color(1), color(2)));
-      last_positions.col(i) = pos;
+       draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), BLACK);
     }
-
+    // And draw new ones.
+    sim->update_drawing_info();
+    for (int i = 0; i < N_PARTICLES; ++i) {
+      // Undraw last position.
+       draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), sim->get_color(i));
+    }
     gfx->flush();
   }
 }
