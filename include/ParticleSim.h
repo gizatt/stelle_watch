@@ -16,6 +16,10 @@ uint16_t color565(uint8_t red, uint8_t green, uint8_t blue) {
   return ((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3);
 }
 
+float positions[N_PARTICLES * 3];
+float velocities[N_PARTICLES * 3];
+uint8_t colors[N_PARTICLES * 3];
+
 class ParticleSim {
 public:
   ParticleSim()
@@ -102,56 +106,55 @@ public:
       float dt = min(t - last_dynamics_update, DYNAMICS_DT);
       last_dynamics_update = t;
 
-      Serial.println("Profiling: Start dynamics update");
-      unsigned long read_time = 0.0;
-      unsigned long dynamics_time = 0.0;
-      unsigned long integration_time = 0.0;
-      unsigned long copy_time = 0.0;
 
-      static float force[3];
-      static float velocity[3];
-      static float position[3];
-      
+      // This is terribly ugly but can I convince it to do no memory
+      // reads/writes?
+      float p0, p1, p2;
+      float v0, v1, v2;
+      unsigned long now = micros();
       for (int i = 0; i < N_PARTICLES; i++){
-        unsigned long now = micros();
+
         // Force computation 
-        unsigned long start_time = now;
         int index = i * 3;
         // Get these reads going all in parallel.
-        for (int k = 0; k < 3; k++){
-          position[k] = positions[index + k];
-          velocity[k] = velocities[index + k];
-        }
-        now = micros();
-        read_time += now - start_time;
-        start_time = now;
+        p0 = positions[index + 0];
+        p1 = positions[index + 1];
+        p2 = positions[index + 2];
+        v0 = velocities[index + 0];
+        v1 = velocities[index + 1];
+        v2 = velocities[index + 2];
         
-        float r_norm_2 = position[0]*position[0] + position[1]*position[1] + position[2]*position[2] + PADDING * PADDING;
+        
+        float r_norm_2 = p0*p0+p1*p1+p2*p2 + PADDING * PADDING;
         float force_scaling = -G * CENTER_MASS / (sqrt(r_norm_2) * r_norm_2);
-        now = micros();
-        dynamics_time += now - start_time;
-        start_time = now;
+
         
         // Integration math
-        for (int k = 0; k < 3; k++){
-          force[k] = force_scaling * position[k];
-          velocity[k] += dt * force[k];
-          position[k] += dt * velocity[k];
-        }
-        now = micros();
-        integration_time += now - start_time;
-        start_time = now;
+        float force = force_scaling * p0;
+        v0 += dt * force;
+        p0 += dt * v0;
+        velocities[index + 0] = v0;
+        positions[index + 0] = p0;
+        force = force_scaling * p1;
+        v1 += dt * force;
+        p1 += dt * v1;
+        velocities[index + 1] = v1;
+        positions[index + 1] = p1;
+        force = force_scaling * p2;
+        v2 += dt * force;
+        p2 += dt * v2;
+        velocities[index + 2] = v2;
+        positions[index + 2] = p2;
 
-        // Integration copy-out
-        for (int k = 0; k < 3; k++){
-          velocities[index + k] = velocity[k];
-          positions[index + k] = position[k];
-        }
-        now = micros();
-        copy_time += now - start_time;
+        float speed_ratio = sqrt(v0*v0+v1*v1+v2*v2) / (MAX_SPEED * 0.5f);
+        speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
+        speed_ratio *= speed_ratio;
+        colors[index + 0] = 255 * 1.0f * speed_ratio;
+        colors[index + 1] = 255 * 0.5f * speed_ratio;
+        colors[index + 2] = 255 * (1.f - speed_ratio);
       }
 
-      Serial.printf("Read %u, Dynamics %u, Integration %u, Write %u\n", read_time/1000, dynamics_time/1000, integration_time/1000, copy_time/1000);
+      Serial.printf("Elapsed %ums\n", (micros() - now)/1000);
 
     // if (t - last_resampling_update > RESAMPLING_DT) {
     //   last_resampling_update = t;
@@ -173,22 +176,16 @@ public:
   }
 
   void update_drawing_info() {
-    // Right now, naively:
-    // int u = (int)(p(0) * 100 + 240);
-    // int v = (int)(p(1) * 100 + 240);
+    // Right now, naive 2d projection
     for (int i = 0; i < N_PARTICLES; i++) {
-      // TODO(gizatt) Simd this?
-      pixel_positions[i * 2 + 0] = (int16_t)(positions[i * 2 + 0] * 100 + 240);
-      pixel_positions[i * 2 + 1] = (int16_t)(positions[i * 2 + 1] * 100 + 240);
+      pixel_positions[i * 2 + 0] = (int16_t)(positions[i * 3 + 0] * 240 + 240);
+      pixel_positions[i * 2 + 1] = (int16_t)(positions[i * 3 + 1] * 240 + 240);
     }
   }
 
 private:
-  float positions[N_PARTICLES * 3];
-  float velocities[N_PARTICLES * 3];
 
   int16_t pixel_positions[2 * N_PARTICLES];
-  uint8_t colors[N_PARTICLES * 3];
 
   Eigen::Matrix3f world_Q_planar;
   Vec3f m_normal_vector;
