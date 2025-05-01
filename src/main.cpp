@@ -20,7 +20,28 @@ ParticleSim *sim = new ParticleSim();
 double start_t = 0.0;
 inline double get_now() { return ((double)millis()) / 1000.0f; }
 
+
+// Math for fading each pixel each tick.
+// Precomputed lookup table of darkenings for up to 6 bit numbers
+uint16_t darkenings[64];
+const float DARKENING_RATIO = 0.95;
+void populate_darkenings(){
+  for (int i = 0; i < 64; i++){
+    darkenings[i] = i * DARKENING_RATIO;
+  }
+}
+const uint8_t lower_five_mask = 0x1F;
+const uint8_t lower_six_mask = 0x3F;
+inline void darken(uint16_t * value){
+  *value = 
+  darkenings[(*value) & lower_five_mask ] |
+  darkenings[(*value >> 5) & lower_six_mask] << 5 |
+  darkenings[(*value >> 5+6) & lower_five_mask] << (5+6);
+}
+
+
 void setup() {
+  populate_darkenings();
   Serial.begin(115200);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
@@ -38,6 +59,7 @@ void setup() {
   }
   gfx->fillScreen(BLACK);
 
+  
   sim->initialize_all_particles();
   start_t = get_now();
 }
@@ -58,6 +80,7 @@ inline void draw_pos(uint16_t u, uint16_t v, uint16_t color) {
   // gfx->drawPixel(u, v-1, color);
 }
 
+
 void loop() {
   double t = get_now();
 
@@ -72,14 +95,18 @@ void loop() {
     // We instead undraw previous pixels to save screen clearing time.
     // gfx->fillScreen(BLACK);
 
-    for (int i = 0; i < N_PARTICLES; ++i) {
-      // Undraw last position.
-       draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), BLACK);
+    uint16_t * framebuffer = gfx->getFramebuffer();
+    for (int i = 0; i < WIDTH*HEIGHT; i++){
+      darken(framebuffer + i);
     }
+    // for (int i = 0; i < N_PARTICLES; ++i) {
+    //   // Undraw last position.
+    //    draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), BLACK);
+    // }
+
     // And draw new ones.
     sim->update_drawing_info();
     for (int i = 0; i < N_PARTICLES; ++i) {
-      // Undraw last position.
        draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), sim->get_color(i));
     }
     gfx->flush();

@@ -9,7 +9,7 @@ WIDTH, HEIGHT = 480, 480
 DRAW_DT = 1./30.
 
 # Sim parameters
-N_PARTICLES = 50000
+N_PARTICLES = 9000
 # Particles have unit mass.
 CENTER_MASS = 1000
 G = 1e-4
@@ -108,7 +108,7 @@ class ParticleSim:
         too_close = np.linalg.norm(self.positions, axis=0) < MIN_DISTANCE
         too_fast = np.linalg.norm(self.velocities, axis=0) > MAX_SPEED
         random = np.random.binomial(1, dt / EXPECTED_LIFTIME, N_PARTICLES) == 1
-        print(f"too_far: {np.sum(too_far)}, too_close: {np.sum(too_close)}, too_fast: {np.sum(too_fast)}, random: {np.sum(random)}")
+        # print(f"too_far: {np.sum(too_far)}, too_close: {np.sum(too_close)}, too_fast: {np.sum(too_fast)}, random: {np.sum(random)}")
         self.initialize_particles(too_far | too_close | too_fast | random)
 
 
@@ -130,6 +130,42 @@ class ParticleDrawing:
         self.center = np.array([WIDTH / 2.0, HEIGHT / 2.0])
 
         self.last_draw = 0.0
+        self.img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+        self.background_img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        primary_color = np.array([0.1, 0.1, 0.3])
+        falloff_color = np.array([0.0, 0.0, 0.05])
+        
+        theta = np.deg2rad(-15)
+        xs = 1/10000.
+        ys = 1/5000.
+        Q = np.array([
+            [xs*np.cos(theta), -ys*np.sin(theta)],
+            [xs*np.sin(theta), ys*np.cos(theta)]
+        ])
+        for u in range(HEIGHT):
+            for v in range(HEIGHT):
+                # Weight x diff less to align with galaxy
+                err = (np.array([u, v]) - self.center)
+                dist = err.T @ Q @ err
+                falloff = 1. - np.exp(-dist)
+                self.background_img[u, v] = (falloff_color * falloff + primary_color * (1. - falloff)) * 255
+
+        for k in range(5):
+            color = ((np.random.uniform(0, 0.5) + np.random.uniform(0.0, 0.05, size=3))*255).astype(np.uint8)
+            center = np.random.uniform(0.0, 1.0, size=2)
+            theta = np.random.uniform(0.0, np.pi/4)
+            w = np.random.uniform(0.05, 0.5)
+            h = np.random.uniform(0.05, 0.5)
+            mat = np.array([[w*np.cos(theta), -w*np.sin(theta)], [h*np.sin(theta), h*np.cos(theta)]])
+            N_stars_in_cluster = int(np.random.uniform(100, 500))
+            uv = (mat @ np.random.normal(0.0, 0.5, size=(2, N_stars_in_cluster))).T + center
+            uv = (uv * np.array([HEIGHT, WIDTH])).astype(int).T
+
+            mask = (uv[0, :] >= 0) & (uv[0, :] < WIDTH) & \
+                (uv[1, :] >= 0) & (uv[1, :] < HEIGHT)
+            
+            self.background_img[uv[0, mask], uv[1, mask], :] = color
 
     def update(self, t):
         if t - self.last_draw < DRAW_DT:
@@ -175,12 +211,16 @@ class ParticleDrawing:
             # #down_amount = (down_amount - min_down) / (max_down - min_down)
             # colors *= down_amount[:, None]
 
-        img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+        self.img = self.img * 0.75
         mask = (uv[0, :] >= 0) & (uv[0, :] < WIDTH) & \
             (uv[1, :] >= 0) & (uv[1, :] < HEIGHT)
-        img[uv[1, mask], uv[0, mask]] = colors[mask, :]*255
+        self.img[uv[1, mask], uv[0, mask]] = colors[mask, :]*255
 
-        pygame.surfarray.blit_array(screen, img.swapaxes(0, 1))
+
+        sum_img = np.clip(self.background_img + self.img, 0, 255)
+
+        pygame.surfarray.blit_array(screen, sum_img.swapaxes(0, 1))
         pygame.display.flip()
         self.n_frames += 1
 
