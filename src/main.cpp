@@ -2,7 +2,7 @@
 #include "ParticleSim.h"
 #include <Arduino_GFX_Library.h>
 #include <math.h>
-
+#include "nebula_bitmap.h"
 
 // type 3, 4, 7: white screen
 // type 6: mostly right. went weirdly green for a while. flashed with a
@@ -21,27 +21,30 @@ double start_t = 0.0;
 inline double get_now() { return ((double)millis()) / 1000.0f; }
 
 
-// Math for fading each pixel each tick.
-// Precomputed lookup table of darkenings for up to 6 bit numbers
-uint16_t darkenings[64];
-const float DARKENING_RATIO = 0.95;
-void populate_darkenings(){
-  for (int i = 0; i < 64; i++){
-    darkenings[i] = i * DARKENING_RATIO;
-  }
-}
+// Math for fading each pixel each tick towards another value.
+uint8_t fade_lookup[64*64];
+const float FADE_RATE = 0.9;
 const uint8_t lower_five_mask = 0x1F;
 const uint8_t lower_six_mask = 0x3F;
-inline void darken(uint16_t * value){
-  *value = 
-  darkenings[(*value) & lower_five_mask ] |
-  darkenings[(*value >> 5) & lower_six_mask] << 5 |
-  darkenings[(*value >> 5+6) & lower_five_mask] << (5+6);
+void populate_fade_lookup_table(){
+  for (int32_t i = 0; i < 64; i++){
+    for (int32_t j = 0; j < 64; j++){
+      // Converge to the background (j) without getting stuck in a neighboring
+      // value.
+      float err = (i - j) * FADE_RATE;
+      // This clamping value is a function of the fade rate and ultimate numeric
+      // precision... but I just guess till the issue goes away.
+      if (fabs(err) < 10){
+        err = 0.0;
+      }
+      fade_lookup[i * 64 + j] = j + err;
+    }
+  }
 }
 
 
 void setup() {
-  populate_darkenings();
+  populate_fade_lookup_table();
   Serial.begin(115200);
 
   pinMode(BACKLIGHT_PIN, OUTPUT);
@@ -57,8 +60,11 @@ void setup() {
   if (!gfx->begin()) {
     Serial.println("gfx->begin() failed!");
   }
-  gfx->fillScreen(BLACK);
-
+  
+  uint16_t * framebuffer = gfx->getFramebuffer();
+  for (int i = 0; i < WIDTH*HEIGHT; i++){
+    framebuffer[i] = nebula_bitmap[i];
+  }
   
   sim->initialize_all_particles();
   start_t = get_now();
@@ -67,19 +73,6 @@ void setup() {
 // === Main loop ===
 int n_frames = 0;
 double last_draw = 0.0;
-
-inline void draw_pos(uint16_t u, uint16_t v, uint16_t color) {
-  if (u < 1 || u >= 479 || v < 0 || v >= 479) {
-    return;
-  }
-  gfx->writePixel(u, v, color);
-  // Draw neighboring pixels as well for a little "star" effect
-  // gfx->drawPixel(u+1, v, color);
-  // gfx->drawPixel(u-1, v, color);
-  // gfx->drawPixel(u, v+1, color);
-  // gfx->drawPixel(u, v-1, color);
-}
-
 
 void loop() {
   double t = get_now();
@@ -96,18 +89,42 @@ void loop() {
     // gfx->fillScreen(BLACK);
 
     uint16_t * framebuffer = gfx->getFramebuffer();
-    for (int i = 0; i < WIDTH*HEIGHT; i++){
-      darken(framebuffer + i);
-    }
-    // for (int i = 0; i < N_PARTICLES; ++i) {
-    //   // Undraw last position.
-    //    draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), BLACK);
+    // Render background of the nebula bitmap with fading star trails
+    // for (int i = 0; i < WIDTH*HEIGHT; i++){
+    //   uint16_t bg = nebula_bitmap[i];
+    //   uint16_t x = framebuffer[i];
+    //   uint16_t x_r = x & lower_five_mask;
+    //   uint16_t x_g = (x >> 5) & lower_six_mask;
+    //   uint16_t x_b = (x >> 11) & lower_five_mask;
+    //   // note(gizatt) artificially darkening bg here
+    //   uint16_t bg_r = bg & lower_five_mask >> 2;
+    //   uint16_t bg_g = (bg >> 5) & lower_six_mask >> 2;
+    //   uint16_t bg_b = (bg >> 11) & lower_five_mask >> 2;
+    //   // This morphs the current value (x) towards the background (bg).
+    //   uint16_t r = fade_lookup[x_r * 64 + bg_r];
+    //   uint16_t g = fade_lookup[x_g * 64 + bg_g];
+    //   uint16_t b = fade_lookup[x_b * 64 + bg_b];
+    //   *(framebuffer + i) = r | (g << 5) | (b << 11);
     // }
+    for (int i = 0; i < N_PARTICLES; ++i) {
+      uint16_t u = sim->get_pixel_u(i);
+      uint16_t v = sim->get_pixel_v(i);
+      if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT){
+        continue;
+      }
+      // Undraw last position.
+      gfx->writePixel(u, v, nebula_bitmap[v*HEIGHT+u]);
+    }
 
     // And draw new ones.
     sim->update_drawing_info();
     for (int i = 0; i < N_PARTICLES; ++i) {
-       draw_pos(sim->get_pixel_u(i), sim->get_pixel_v(i), sim->get_color(i));
+      uint16_t u = sim->get_pixel_u(i);
+      uint16_t v = sim->get_pixel_v(i);
+      if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT){
+        continue;
+      }
+      gfx->writePixel(u, v, sim->get_color(i));
     }
     gfx->flush();
   }

@@ -3,6 +3,8 @@ import pygame
 import time
 from collections import defaultdict
 import matplotlib.pyplot as plt
+import colorsys
+import numba
 
 # Screen size
 WIDTH, HEIGHT = 480, 480
@@ -12,20 +14,51 @@ DRAW_DT = 1./30.
 N_PARTICLES = 9000
 # Particles have unit mass.
 CENTER_MASS = 1000
-G = 1e-4
+G = 1e-5
 TARGET_DT = 0.01
 REAL_TIME_FACTOR = 1.0
 PADDING = 1E-4
-VELOCITY_DAMPING = 0.01
-INITIAL_VELOCITY_PENALTY = 0.5
+VELOCITY_DAMPING = 0.05
+INITIAL_VELOCITY_PENALTY = 0.9
 INITIAL_VELOCITY_VARIANCE = 0.1
 MIN_DISTANCE = 0.02
-MAX_SPEED = 2.0
-EXPECTED_LIFTIME = 5
-N_SPIRALS = 6
+MAX_SPEED = 0.5
+EXPECTED_LIFTIME = 10
+N_SPIRALS = 5
 
 # State
 ND = 3
+
+bg_im = "assets/nebula.png"
+
+# Pregenerate sprites of each radius. These are just gaussian kernels
+MAX_RADIUS = 20
+sprites = []
+for radius in range(0, MAX_RADIUS+1):
+    sprite = np.zeros((radius*2+1, radius*2+1))
+    center_x = radius
+    center_y = radius
+    for u in range(radius):
+        for v in range(radius):
+            sqnorm = u*u+v*v
+            falloff = np.exp(-sqnorm/radius)
+            sprite[radius+u, radius+v] = falloff
+            sprite[radius-u, radius+v] = falloff
+            sprite[radius+u, radius-v] = falloff
+            sprite[radius-u, radius-v] = falloff
+    sprites.append(sprite)
+
+BLACK_HOLE_RADIUS = 5
+radius = BLACK_HOLE_RADIUS
+black_hole_sprite = np.zeros((2*radius+1, 2*radius+1))
+for u in range(radius):
+    for v in range(radius):
+        norm = np.sqrt(u * u + v * v)
+        if norm <= radius:
+            black_hole_sprite[radius+u, radius+v] = 1.0
+            black_hole_sprite[radius-u, radius+v] = 1.0
+            black_hole_sprite[radius+u, radius-v] = 1.0
+            black_hole_sprite[radius-u, radius-v] = 1.0
 
 class ParticleSim:
     def __init__(self):
@@ -38,7 +71,29 @@ class ParticleSim:
         self.forces = np.zeros((ND, N_PARTICLES))
         self.colors = np.zeros((3, N_PARTICLES))
 
+        # Start with random ages so they respawn at an even clip
+        self.ages = EXPECTED_LIFTIME * np.arange(N_PARTICLES, dtype=float) / N_PARTICLES
+
+        # Radiis and colors can be sampled once and persist across resets.
+        hs = np.random.uniform(.6, .9, N_PARTICLES)
+        ss = np.random.uniform(0.0, 0.4, N_PARTICLES)
+        vs = np.random.uniform(0.2, 1.0, N_PARTICLES)
+        self.colors = (np.stack([colorsys.hsv_to_rgb(h, s, v) for h, s, v in zip(hs, ss, vs)], axis=-1)*255).astype(np.uint8)
+        self.radii = (np.random.geometric(p=0.2, size=N_PARTICLES).clip(1, MAX_RADIUS+1)-1).astype(np.uint32)
+
         self.set_normal_vector([0.5, 1.0, 0.85])
+
+        # Current pixel coordinates (and scaled depth) of each star
+        self.uvzs = np.zeros((3, N_PARTICLES), dtype=np.uint32)
+
+        # Orthogonal projection
+        self.K = np.zeros((3, ND))
+        self.f = min(WIDTH, HEIGHT) / 2.0
+        self.K[0, 0] = self.f
+        self.K[1, 1] = self.f
+        self.K[2, 2] = 1000.0
+        self.center = np.array([WIDTH / 2.0, HEIGHT / 2.0, 0.0])
+
 
     def set_normal_vector(self, normal_vector):
         self.normal_vector = normal_vector / np.linalg.norm(normal_vector)
@@ -62,6 +117,8 @@ class ParticleSim:
 
     def initialize_all_particles(self):
         self.initialize_particles(np.full((N_PARTICLES,), True))
+        # Start with random ages so they respawn at an even clip
+        self.ages = EXPECTED_LIFTIME * np.arange(N_PARTICLES, dtype=float) / N_PARTICLES
 
     def initialize_particles(self, mask):
         theta = np.random.normal(0, 0.05, N_PARTICLES) + np.random.randint(0, N_SPIRALS, N_PARTICLES) * (2 * np.pi / N_SPIRALS)
@@ -85,14 +142,14 @@ class ParticleSim:
         if ND >= 3:
             uv_dot[2, :] = np.random.normal(0, 0.01, N_PARTICLES)
         self.velocities[:, mask] = self.world_Q_planar @ uv_dot[:, mask]
-
-        self.colors[:, mask] = plt.get_cmap("Blues")(np.random.uniform(0.0, 1.0, N_PARTICLES))[mask, :3].T
+        self.ages[mask] = 0
 
     def dynamics_update(self, t):
         if t - self.last_dynamics_update < TARGET_DT:
             return
-        dt = t - self.last_dynamics_update
+        dt = min(t - self.last_dynamics_update, TARGET_DT)
         self.last_dynamics_update = t
+        self.ages += dt
 
         # Compute forces towards center.
         self.forces.fill(0)
@@ -104,74 +161,15 @@ class ParticleSim:
         self.positions += self.velocities * dt
 
         # Respawn particles that have diverged.
-        too_far = np.linalg.norm(self.positions, axis=0) > 2.0
-        too_close = np.linalg.norm(self.positions, axis=0) < MIN_DISTANCE
-        too_fast = np.linalg.norm(self.velocities, axis=0) > MAX_SPEED
-        random = np.random.binomial(1, dt / EXPECTED_LIFTIME, N_PARTICLES) == 1
+        # too_far = np.linalg.norm(self.positions, axis=0) > 2.0
+        # too_close = np.linalg.norm(self.positions, axis=0) < MIN_DISTANCE
+        # too_fast = np.linalg.norm(self.velocities, axis=0) > MAX_SPEED
+        # random = np.random.binomial(1, dt / EXPECTED_LIFTIME, N_PARTICLES) == 1
+        too_old = self.ages >= EXPECTED_LIFTIME
         # print(f"too_far: {np.sum(too_far)}, too_close: {np.sum(too_close)}, too_fast: {np.sum(too_fast)}, random: {np.sum(random)}")
-        self.initialize_particles(too_far | too_close | too_fast | random)
+        self.initialize_particles(too_old)
 
-
-class ParticleDrawing:
-    ''''
-        Illustrates particles using orthongonal projection. Camera is fixed
-        looking at the origin, if in 3D, will rotate around it.
-    '''
-    def __init__(self, screen, sim):
-        self.screen = screen
-        self.sim = sim
-
-        self.n_frames = 0
-
-        self.K = np.zeros((2, ND))
-        self.f = min(WIDTH, HEIGHT) / 2.0
-        self.K[0, 0] = self.f
-        self.K[1, 1] = self.f
-        self.center = np.array([WIDTH / 2.0, HEIGHT / 2.0])
-
-        self.last_draw = 0.0
-        self.img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-
-        self.background_img = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-        primary_color = np.array([0.1, 0.1, 0.3])
-        falloff_color = np.array([0.0, 0.0, 0.05])
-        
-        theta = np.deg2rad(-15)
-        xs = 1/10000.
-        ys = 1/5000.
-        Q = np.array([
-            [xs*np.cos(theta), -ys*np.sin(theta)],
-            [xs*np.sin(theta), ys*np.cos(theta)]
-        ])
-        for u in range(HEIGHT):
-            for v in range(HEIGHT):
-                # Weight x diff less to align with galaxy
-                err = (np.array([u, v]) - self.center)
-                dist = err.T @ Q @ err
-                falloff = 1. - np.exp(-dist)
-                self.background_img[u, v] = (falloff_color * falloff + primary_color * (1. - falloff)) * 255
-
-        for k in range(5):
-            color = ((np.random.uniform(0, 0.5) + np.random.uniform(0.0, 0.05, size=3))*255).astype(np.uint8)
-            center = np.random.uniform(0.0, 1.0, size=2)
-            theta = np.random.uniform(0.0, np.pi/4)
-            w = np.random.uniform(0.05, 0.5)
-            h = np.random.uniform(0.05, 0.5)
-            mat = np.array([[w*np.cos(theta), -w*np.sin(theta)], [h*np.sin(theta), h*np.cos(theta)]])
-            N_stars_in_cluster = int(np.random.uniform(100, 500))
-            uv = (mat @ np.random.normal(0.0, 0.5, size=(2, N_stars_in_cluster))).T + center
-            uv = (uv * np.array([HEIGHT, WIDTH])).astype(int).T
-
-            mask = (uv[0, :] >= 0) & (uv[0, :] < WIDTH) & \
-                (uv[1, :] >= 0) & (uv[1, :] < HEIGHT)
-            
-            self.background_img[uv[0, mask], uv[1, mask], :] = color
-
-    def update(self, t):
-        if t - self.last_draw < DRAW_DT:
-            return
-        self.last_draw = t
-
+    def view_update(self, t):
         # Update the view position.
         if ND == 3:
             view_direction = np.array([np.sin(0.2*t)*0.3, np.sin(0.3*t)*0.3, 0.9 + 0.1 * np.cos(0.3*t)])
@@ -183,23 +181,77 @@ class ParticleDrawing:
                 x_axis = np.array([0, 1, 0])
             y_axis = np.cross(view_direction, x_axis)
             x_axis = np.cross(y_axis, view_direction)
+            z_axis = np.cross(x_axis, y_axis)
             self.K = np.array([
-                x_axis,
-                y_axis,
-            ]) * self.f
-
-
-
-        self.screen.fill((0, 0, 0))
+                x_axis * self.f,
+                y_axis * self.f,
+                z_axis * self.f,
+            ]) 
+        self.uvzs = self.K @ sim.positions
+        self.uvzs = ((self.uvzs.T + self.center).T).astype(np.uint32)
         
-        # Draw the orbiting stars, with color based on speed with some unique per-star jitter.
-        uv = self.K @ sim.positions
-        uv = ((uv.T + self.center).T).astype(np.int32)
-        
+@numba.jit()
+def draw_particle(img, uvz, sprite, color, age, background_image, z_buffer):
+    sprite_width = sprite.shape[0] 
+    radius = int((sprite_width-1)/2)
+    for dx in range(0, sprite_width):
+        for dy in range(0, sprite_width):
+            u = uvz[0] + dx - radius
+            v = uvz[1] + dy - radius
+            z = uvz[0]
+            if u < 0 or u >= WIDTH or v < 0 or v >= HEIGHT:
+                continue
+            alpha = sprite[dx, dy]
+            if (age < 1):
+                alpha *= age
+            elif (age >= EXPECTED_LIFTIME - 1):
+                alpha *= (EXPECTED_LIFTIME - age)
+            if z > z_buffer[u, v]:
+                continue
+            if alpha > 0.9:
+                z_buffer[u, v] = z
+            TRANSMISSIVITY = 0.5
+            for k in range(3):
+                new_value = int(img[u, v, k] * (1. - alpha*TRANSMISSIVITY) + alpha * color[k])
+                img[u, v, k] = min(max(new_value, 0), 255)
+
+@numba.jit()
+def draw_background(img, uvz, radius, background_image):
+    for dx in range(0, 2*radius+1):
+        for dy in range(0, 2*radius+1):
+            u = uvz[0] + dx - radius
+            v = uvz[1] + dy - radius
+            if u < 0 or u >= WIDTH or v < 0 or v >= HEIGHT:
+                continue
+            for k in range(3):
+                img[u, v, k] = background_image[u, v, k]
+
+class ParticleDrawing:
+    ''''
+        Illustrates particles using orthongonal projection. Camera is fixed
+        looking at the origin, if in 3D, will rotate around it.
+    '''
+    def __init__(self, screen, sim):
+        self.screen = screen
+        self.sim = sim
+
+        self.n_frames = 0
+        self.last_draw = 0.0
+        self.background_img = (plt.imread(bg_im)[:, :, :3]*255).astype(np.uint8)
+        assert self.background_img.shape == (HEIGHT, WIDTH, 3)
+        self.img = self.background_img.copy()
+        self.z_buffer = np.zeros((HEIGHT, WIDTH))
+
+
+    def update(self, t):
+        if t - self.last_draw < DRAW_DT:
+            return
+        self.last_draw = t
+
         speeds = np.linalg.norm(sim.velocities, axis=0)
         
-        fast_color = np.array([1.0, 0.4, 0.1])
-        speed_ratio = np.clip(speeds / (MAX_SPEED * 0.5), 0, 1)**2.
+        fast_color = np.array([1.0, 0.7, 0.5])*255
+        speed_ratio = np.clip(speeds / (MAX_SPEED * 0.75), 0, 1)**2.
         colors = speed_ratio[:, None] * fast_color + sim.colors.T * (1. - speed_ratio[:, None])
 
         #if ND == 3:
@@ -211,18 +263,26 @@ class ParticleDrawing:
             # #down_amount = (down_amount - min_down) / (max_down - min_down)
             # colors *= down_amount[:, None]
 
+        # Undraw previous stars
+        for uvz, radius in zip(self.sim.uvzs.T, self.sim.radii):
+            draw_background(self.img, uvz, radius, self.background_img)
 
-        self.img = self.img * 0.75
-        mask = (uv[0, :] >= 0) & (uv[0, :] < WIDTH) & \
-            (uv[1, :] >= 0) & (uv[1, :] < HEIGHT)
-        self.img[uv[1, mask], uv[0, mask]] = colors[mask, :]*255
+        self.sim.view_update(t)
 
+        # Draw new stars
+        self.z_buffer[:] = 10000
+        
+        # Draw a black circle at the center.
+        # draw_particle(self.img, np.array([WIDTH/2, HEIGHT/2, 0], dtype=np.uint32), black_hole_sprite, (0, 0, 0), EXPECTED_LIFTIME/2, self.background_img, self.z_buffer)
 
-        sum_img = np.clip(self.background_img + self.img, 0, 255)
+        for uvz, radius, color, age in zip(self.sim.uvzs.T, self.sim.radii, colors, self.sim.ages):
+            draw_particle(self.img, uvz, sprites[radius], color, age, self.background_img, self.z_buffer)
 
-        pygame.surfarray.blit_array(screen, sum_img.swapaxes(0, 1))
+        pygame.surfarray.blit_array(screen, self.img.swapaxes(0, 1))
         pygame.display.flip()
         self.n_frames += 1
+
+
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@
 #include <iostream>
 #include <random>
 
+#include "nebula_bitmap.h"
+
 #include "Config.h"
 
 using Vec3f = Eigen::Vector3f;
@@ -91,9 +93,9 @@ public:
     }
 
     // TODO: Sample
-    colors[index * 3 + 0] = (index * 3) % 255;
-    colors[index * 3 + 1] = index % 255;
-    colors[index * 3 + 2] = (index * 2) % 255;
+    colors[index * 3 + 0] =  255 - (index % 10);
+    colors[index * 3 + 1] =  255 - (index % 20);
+    colors[index * 3 + 2] =  255 - (index % 30);
   }
 
   void dynamics_update(double t) {
@@ -149,9 +151,9 @@ public:
         float speed_ratio = sqrt(v0*v0+v1*v1+v2*v2) / (MAX_SPEED * 0.5f);
         speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
         speed_ratio *= speed_ratio;
-        colors[index + 0] = 255 * 1.0f * speed_ratio;
-        colors[index + 1] = 255 * 0.5f * speed_ratio;
-        colors[index + 2] = 255 * (1.f - speed_ratio);
+        // colors[index + 0] = 255 * 1.0f * speed_ratio;
+        // colors[index + 1] = 255 * 0.5f * speed_ratio;
+        // colors[index + 2] = 255 * (1.f - speed_ratio);
       }
 
       Serial.printf("Elapsed %ums\n", (micros() - now)/1000);
