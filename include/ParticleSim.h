@@ -11,6 +11,7 @@
 #include "Config.h"
 #include "hsv2rgb.h"
 #include "nebula_bitmap.h"
+#include "rgb565_math.h"
 
 using Vec3f = Eigen::Vector3f;
 
@@ -33,7 +34,7 @@ int16_t ages_ms[N_PARTICLES];
 
 // Pregenerated sprites of each radius up to the max radius. Sprite at index i
 // is size (ind*2+1)^2.
-constexpr int MAX_RADIUS = 20;
+constexpr int MAX_RADIUS = 10;
 uint8_t *sprites[MAX_RADIUS + 1];
 
 class ParticleSim {
@@ -64,13 +65,13 @@ public:
       uint8_t *sprite =
           (uint8_t *)malloc(side_length * side_length * sizeof(uint8_t));
       sprites[radius] = sprite;
-      for (int u = 0; u < radius; u++) {
-        for (int v = 0; v < radius; v++) {
-          uint8_t value = exp(-u * u + v * v / radius) * 255;
-          sprite[uv_to_index(u + radius, v + radius, side_length)] = value;
-          sprite[uv_to_index(u - radius, v + radius, side_length)] = value;
-          sprite[uv_to_index(u + radius, v - radius, side_length)] = value;
-          sprite[uv_to_index(u - radius, v - radius, side_length)] = value;
+      for (int u = 0; u < radius + 1; u++) {
+        for (int v = 0; v < radius + 1; v++) {
+          uint8_t value = exp(-(u * u + v * v) / radius) * 255;
+          sprite[uv_to_index(radius + u, radius + v, side_length)] = value;
+          sprite[uv_to_index(radius + u, radius - v, side_length)] = value;
+          sprite[uv_to_index(radius - u, radius + v, side_length)] = value;
+          sprite[uv_to_index(radius - u, radius - v, side_length)] = value;
         }
       }
     }
@@ -202,33 +203,28 @@ public:
         velocities[index + 2] = v2;
         positions[index + 2] = p2;
 
-        float speed_ratio =
-            sqrt(v0 * v0 + v1 * v1 + v2 * v2) / (MAX_SPEED * 0.5f);
-        speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
-        speed_ratio *= speed_ratio;
-        // colors[index + 0] = 255 * 1.0f * speed_ratio;
-        // colors[index + 1] = 255 * 0.5f * speed_ratio;
-        // colors[index + 2] = 255 * (1.f - speed_ratio);
+        // float speed_ratio =
+        //     sqrt(v0 * v0 + v1 * v1 + v2 * v2) / (MAX_SPEED * 0.5f);
+        // speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
+        // speed_ratio *= speed_ratio;
+        // // colors[index + 0] = 255 * 1.0f * speed_ratio;
+        // // colors[index + 1] = 255 * 0.5f * speed_ratio;
+        // // colors[index + 2] = 255 * (1.f - speed_ratio);
+
+        ages_ms[i] += dt * 1000;
       }
 
       Serial.printf("Elapsed %ums\n", (micros() - now) / 1000);
 
-      // if (t - last_resampling_update > RESAMPLING_DT) {
-      //   last_resampling_update = t;
-      //   for (int i = 0; i < N_PARTICLES; ++i) {
-      //     float norm_squared = 0.0;
-      //     dsps_dotprod_f32_aes3(positions + 3 * i, positions + 3 * i,
-      //                           &norm_squared, 3);
-      //     float speed_squared = 0.0;
-      //     dsps_dotprod_f32_aes3(velocities + 3 * i, velocities + 3 * i,
-      //                           &speed_squared, 3);
-      //     if ((norm_squared > 4.0f) ||
-      //         (norm_squared < MIN_DISTANCE * MIN_DISTANCE) ||
-      //         (speed_squared > MAX_SPEED * MAX_SPEED)) {
-      //       initialize_particle(i);
-      //     }
-      //   }
-      // }
+      if (t - last_resampling_update > RESAMPLING_DT) {
+        last_resampling_update = t;
+        for (int i = 0; i < N_PARTICLES; ++i) {
+          if (ages_ms[i] >= MAX_AGE_MS) {
+            initialize_particle_position(i);
+            ages_ms[i] = 0;
+          }
+        }
+      }
     }
   }
 
@@ -249,28 +245,56 @@ public:
 
   void undraw_particles(uint16_t *framebuffer) {
     int pixel_index = 0;
-    for (int i = 0; i < N_PARTICLES; ++i) {
-      uint16_t u = pixel_positions[pixel_index + 0];
-      uint16_t v = pixel_positions[pixel_index + 1];
+    for (int i = 0; i < N_PARTICLES; i++) {
+      int radius = radii[i];
+      int side_length = radius * 2 + 1;
+      uint16_t u_center = pixel_positions[pixel_index + 0];
+      uint16_t v_center = pixel_positions[pixel_index + 1];
       pixel_index += 3;
-      if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT) {
-        continue;
+      for (int du = 0; du < side_length; du++) {
+        for (int dv = 0; dv < side_length; dv++) {
+          uint16_t u = u_center + du - radius;
+          uint16_t v = v_center + dv - radius;
+          if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT) {
+            continue;
+          }
+          int out_index = uv_to_index(u, v, WIDTH);
+          framebuffer[out_index] = nebula_bitmap[out_index];
+        }
       }
-      int out_index = uv_to_index(u, v, WIDTH);
-      framebuffer[out_index] = nebula_bitmap[out_index];
     }
   }
 
   void draw_particles(uint16_t *framebuffer) {
     int pixel_index = 0;
-    for (int i = 0; i < N_PARTICLES; ++i) {
-      uint16_t u = pixel_positions[pixel_index + 0];
-      uint16_t v = pixel_positions[pixel_index + 1];
+    for (int i = 0; i < N_PARTICLES; i++) {
+      int radius = radii[i];
+      int side_length = radius * 2 + 1;
+      uint8_t new_r = colors[pixel_index];
+      uint8_t new_g = colors[pixel_index + 1];
+      uint8_t new_b = colors[pixel_index + 2];
+      uint16_t u_center = pixel_positions[pixel_index + 0];
+      uint16_t v_center = pixel_positions[pixel_index + 1];
       pixel_index += 3;
-      if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT) {
-        continue;
+      for (int du = 0; du < side_length; du++) {
+        for (int dv = 0; dv < side_length; dv++) {
+          uint16_t u = u_center + du - radius;
+          uint16_t v = v_center + dv - radius;
+          if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT) {
+            continue;
+          }
+          int out_index = uv_to_index(u, v, WIDTH);
+          uint8_t alpha = sprites[radius][uv_to_index(du, dv, side_length)];
+          uint8_t beta = 255 - alpha >> 2;
+          uint8_t old_r = ((framebuffer[out_index] >> 6+5) & 0x1F) << 3;
+          uint8_t old_g = ((framebuffer[out_index] >> 5) & 0x3F) << 2;
+          uint8_t old_b = ((framebuffer[out_index]) & 0x1F ) << 3;
+          uint8_t blended_r = min((alpha * new_r + old_r * beta) >> 8, 255);
+          uint8_t blended_g = min((alpha * new_g + old_g * beta) >> 8, 255);
+          uint8_t blended_b = min((alpha * new_b + old_b * beta) >> 8, 255);
+          framebuffer[out_index] = RGB565(max(blended_r, old_r), max(blended_g, old_g), max(blended_b, old_b));
+        }
       }
-      framebuffer[uv_to_index(u, v, WIDTH)] = get_color(i);
     }
   }
 
@@ -278,7 +302,7 @@ public:
     // Set R from a view ray.
     view_direction /= view_direction.norm();
     Vec3f x_axis(1.0, 0.0, 0.0);
-    if (x_axis.dot(view_direction) > 0.99){
+    if (x_axis.dot(view_direction) > 0.99) {
       x_axis << 0.0, 1.0, 0.0;
     }
     Vec3f y_axis = view_direction.cross(x_axis);
