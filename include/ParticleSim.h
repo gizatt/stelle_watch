@@ -18,9 +18,15 @@ uint16_t color565(uint8_t red, uint8_t green, uint8_t blue) {
   return ((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3);
 }
 
+inline int uv_to_index(int u, int v) {
+  return u * WIDTH + v;
+}
+
+// These are defined statically so they get put in DRAM, which seems empirically much faster.
 float positions[N_PARTICLES * 3];
 float velocities[N_PARTICLES * 3];
 uint8_t colors[N_PARTICLES * 3];
+int16_t pixel_positions[2 * N_PARTICLES];
 
 class ParticleSim {
 public:
@@ -185,10 +191,34 @@ public:
     }
   }
 
+  void undraw_particles(uint16_t * framebuffer) {
+    int pixel_index = 0;
+    for (int i = 0; i < N_PARTICLES; ++i) {
+      uint16_t u = pixel_positions[pixel_index + 0];
+      uint16_t v = pixel_positions[pixel_index + 1];
+      pixel_index += 2;
+      if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT){
+        continue;
+      }
+      int out_index = uv_to_index(u, v);
+      framebuffer[out_index] = nebula_bitmap[out_index];
+    }
+  }
+  
+  void draw_particles(uint16_t * framebuffer) {
+    int pixel_index = 0;
+    for (int i = 0; i < N_PARTICLES; ++i) {
+      uint16_t u = pixel_positions[pixel_index + 0];
+      uint16_t v = pixel_positions[pixel_index + 1];
+      pixel_index += 2;
+      if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT){
+        continue;
+      }
+      framebuffer[uv_to_index(u, v)] = get_color(i);
+    }
+  }
+
 private:
-
-  int16_t pixel_positions[2 * N_PARTICLES];
-
   Eigen::Matrix3f world_Q_planar;
   Vec3f m_normal_vector;
 

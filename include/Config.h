@@ -6,7 +6,7 @@ const int HEIGHT = 480;
 const double DRAW_DT = 1.0 / 20.0;
 
 // Sim parameters
-const int N_PARTICLES = 9000;
+const int N_PARTICLES = 8000;
 // Particles have unit mass.
 const float CENTER_MASS = 1000.0;
 const float G = 1e-4;
