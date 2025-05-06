@@ -11,7 +11,7 @@
 #define MASK_MUL_G 129024   // 0b0000011111100000000000
 #define MAX_ALPHA 64        // 6bits+1 with rounding
 
-uint16_t alphablend(uint16_t fg, uint16_t bg, uint8_t alpha, uint8_t transmissivity_factor) {
+uint16_t alphablend(uint16_t fg, uint16_t bg, uint8_t alpha, uint8_t transmissivity_pow_2) {
 
   // alpha for foreground multiplication
   // convert from 8bit to (6bit+1) with rounding
@@ -19,7 +19,7 @@ uint16_t alphablend(uint16_t fg, uint16_t bg, uint8_t alpha, uint8_t transmissiv
   alpha = (alpha + 2) >> 2;
   // "beta" for background multiplication; (6bit+1);
   // will be in [0..64] inclusive
-  uint8_t beta = (MAX_ALPHA - alpha * transmissivity_factor);
+  uint8_t beta = (MAX_ALPHA - alpha >> transmissivity_pow_2);
   // so (0..64)*alpha + (0..64)*beta always in 0..64
 
   return (uint16_t)((((alpha * (uint32_t)(fg & MASK_RB) +

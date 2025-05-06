@@ -23,19 +23,21 @@ inline int uv_to_index(int u, int v, int width) { return u * width + v; }
 
 // These are defined statically so they get put in DRAM, which seems empirically
 // much faster.
-float positions[N_PARTICLES * 3];
-float velocities[N_PARTICLES * 3];
-uint8_t radii[N_PARTICLES];
-uint8_t colors[N_PARTICLES * 3];
+DRAM_ATTR float positions[N_PARTICLES * 3];
+DRAM_ATTR float velocities[N_PARTICLES * 3];
+DRAM_ATTR uint8_t radii[N_PARTICLES];
+DRAM_ATTR uint8_t colors[N_PARTICLES * 3];
 // UV and projection depth Z.
-int16_t pixel_positions[3 * N_PARTICLES];
+DRAM_ATTR int16_t pixel_positions[3 * N_PARTICLES];
 
 int16_t ages_ms[N_PARTICLES];
 
 // Pregenerated sprites of each radius up to the max radius. Sprite at index i
 // is size (ind*2+1)^2.
-constexpr int MAX_RADIUS = 10;
+constexpr int MAX_RADIUS = 6;
 uint8_t *sprites[MAX_RADIUS + 1];
+
+uint16_t *nebula_psram;
 
 class ParticleSim {
 public:
@@ -44,18 +46,23 @@ public:
         m_gen(std::random_device()()), m_theta_dist(0, 0.05f),
         m_spiral_dist(0, N_SPIRALS - 1), m_r_dist(0.75f, 0.05f),
         m_z_dist(0, 0.05f), m_speed_variance(1.0f, INITIAL_VELOCITY_VARIANCE),
+        m_out_of_plane_speed_dist(0.0, 0.01),
         world_Q_planar(Eigen::Matrix3f::Identity()), m_hue_dist(0.6, 0.9),
-        m_saturation_dist(0.0, 0.4), m_value_dist(0.2, 1.0), m_radii_dist(0.2),
+        m_saturation_dist(0.0, 0.4), m_value_dist(0.2, 1.0), m_radii_dist(0.5),
         m_focal_length(WIDTH / 2.0) {
     initialize_sprites();
-    do_onetime_particle_init();
-
-    update_drawing_info();
     set_normal_vector({0.5f, 1.0f, 0.85f});
-
     // Calculate projection matrix and info.
     m_view_center << WIDTH / 2.0, HEIGHT / 2.0, 0.0;
     set_view_direction(Vec3f(0.0, 0.0, 1.0));
+
+    do_onetime_particle_init();
+    update_drawing_info();
+
+    nebula_psram = (uint16_t *)ps_malloc(sizeof(nebula_bitmap));
+    memcpy(nebula_psram, nebula_bitmap, sizeof(nebula_bitmap));
+
+
   }
 
   void initialize_sprites() {
@@ -63,7 +70,7 @@ public:
     for (int radius = 0; radius < MAX_RADIUS + 1; radius++) {
       int side_length = radius * 2 + 1;
       uint8_t *sprite =
-          (uint8_t *)malloc(side_length * side_length * sizeof(uint8_t));
+          (uint8_t *)ps_malloc(side_length * side_length * sizeof(uint8_t));
       sprites[radius] = sprite;
       for (int u = 0; u < radius + 1; u++) {
         for (int v = 0; v < radius + 1; v++) {
@@ -130,7 +137,7 @@ public:
                   m_speed_variance(m_gen);
     uv_dot(0) = -speed * std::sin(theta);
     uv_dot(1) = speed * std::cos(theta);
-    uv_dot(2) = 0.0; // Could have random velocity here too.
+    uv_dot(2) = m_out_of_plane_speed_dist(m_gen);
 
     const auto pos = world_Q_planar * uv;
     const auto vel = world_Q_planar * uv_dot;
@@ -188,17 +195,17 @@ public:
 
         // Integration math
         float force = force_scaling * p0;
-        v0 += dt * force;
+        v0 += dt * (force - v0 * VELOCITY_DAMPING);
         p0 += dt * v0;
         velocities[index + 0] = v0;
         positions[index + 0] = p0;
         force = force_scaling * p1;
-        v1 += dt * force;
+        v1 += dt  * (force - v1 * VELOCITY_DAMPING);
         p1 += dt * v1;
         velocities[index + 1] = v1;
         positions[index + 1] = p1;
         force = force_scaling * p2;
-        v2 += dt * force;
+        v2 += dt  * (force - v2 * VELOCITY_DAMPING);
         p2 += dt * v2;
         velocities[index + 2] = v2;
         positions[index + 2] = p2;
@@ -245,24 +252,34 @@ public:
 
   void undraw_particles(uint16_t *framebuffer) {
     int pixel_index = 0;
-    for (int i = 0; i < N_PARTICLES; i++) {
-      int radius = radii[i];
-      int side_length = radius * 2 + 1;
-      uint16_t u_center = pixel_positions[pixel_index + 0];
-      uint16_t v_center = pixel_positions[pixel_index + 1];
-      pixel_index += 3;
-      for (int du = 0; du < side_length; du++) {
-        for (int dv = 0; dv < side_length; dv++) {
-          uint16_t u = u_center + du - radius;
-          uint16_t v = v_center + dv - radius;
-          if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT) {
-            continue;
-          }
-          int out_index = uv_to_index(u, v, WIDTH);
-          framebuffer[out_index] = nebula_bitmap[out_index];
-        }
-      }
-    }
+    int n_accesses = 0;
+    // For large numbers of particles, particularly
+    // with a lot of overlap, it's faster to just copy the background image
+    // wholesale.
+    memcpy(framebuffer, nebula_psram, sizeof(nebula_bitmap));
+    // for (int i = 0; i < N_PARTICLES; i++) {
+    //   int radius = radii[i];
+    //   int side_length = radius * 2 + 1;
+    //   uint16_t u_center = pixel_positions[pixel_index + 0];
+    //   uint16_t v_center = pixel_positions[pixel_index + 1];
+    //   pixel_index += 3;
+    //   for (int du = 0; du < side_length; du++) {
+    //     uint16_t u = u_center + du - radius;
+    //     if (u < 0 || u >= WIDTH) {
+    //       continue;
+    //     }
+    //     for (int dv = 0; dv < side_length; dv++) {
+    //       uint16_t v = v_center + dv - radius;
+    //       if (v < 0 || v >= HEIGHT) {
+    //         continue;
+    //       }
+    //       int out_index = uv_to_index(u, v, WIDTH);
+    //       framebuffer[out_index] = 0;// nebula_bitmap[out_index];
+    //       n_accesses ++;
+    //     }
+    //   }
+    // }
+    // Serial.printf("%d accesses in undraw.\n", n_accesses);
   }
 
   void draw_particles(uint16_t *framebuffer) {
@@ -270,29 +287,57 @@ public:
     for (int i = 0; i < N_PARTICLES; i++) {
       int radius = radii[i];
       int side_length = radius * 2 + 1;
+      uint8_t * sprite = sprites[radius];
       uint8_t new_r = colors[pixel_index];
       uint8_t new_g = colors[pixel_index + 1];
       uint8_t new_b = colors[pixel_index + 2];
+      uint16_t new_rgb = RGB565(new_r, new_g, new_b);
       uint16_t u_center = pixel_positions[pixel_index + 0];
       uint16_t v_center = pixel_positions[pixel_index + 1];
       pixel_index += 3;
-      for (int du = 0; du < side_length; du++) {
-        for (int dv = 0; dv < side_length; dv++) {
-          uint16_t u = u_center + du - radius;
-          uint16_t v = v_center + dv - radius;
-          if (u < 0 || u >= WIDTH || v < 0 || v >= HEIGHT) {
+      int sprite_index = 0;
+      // framebuffer[uv_to_index(u_center, v_center, WIDTH)] = RGB565(255, 255,
+      // 255); continue;
+      for (int du = -radius; du < radius+1; du++) {
+        uint16_t u = u_center + du;
+        if (u < 0 || u >= WIDTH) {
+          continue;
+        }
+        for (int dv = -radius; dv < radius; dv++) {
+          sprite_index++;
+          uint16_t v = v_center + dv;
+          if (v < 0 || v >= HEIGHT) {
+            continue;
+          }
+          if ((du * du + dv * dv) >= radius*radius) {
             continue;
           }
           int out_index = uv_to_index(u, v, WIDTH);
-          uint8_t alpha = sprites[radius][uv_to_index(du, dv, side_length)];
-          uint8_t beta = 255 - alpha >> 2;
-          uint8_t old_r = ((framebuffer[out_index] >> 6+5) & 0x1F) << 3;
-          uint8_t old_g = ((framebuffer[out_index] >> 5) & 0x3F) << 2;
-          uint8_t old_b = ((framebuffer[out_index]) & 0x1F ) << 3;
-          uint8_t blended_r = min((alpha * new_r + old_r * beta) >> 8, 255);
-          uint8_t blended_g = min((alpha * new_g + old_g * beta) >> 8, 255);
-          uint8_t blended_b = min((alpha * new_b + old_b * beta) >> 8, 255);
-          framebuffer[out_index] = RGB565(max(blended_r, old_r), max(blended_g, old_g), max(blended_b, old_b));
+          uint8_t alpha = sprite[sprite_index - 1];
+          uint16_t old_val = framebuffer[out_index];
+
+          // Correct but slow
+          //uint8_t beta = (255 - alpha) >> 2;
+          // uint8_t old_r = ((old_val >> 11) & 0x1F) << 3;  // 5 bits → 8 bits
+          // uint8_t old_g = ((old_val >> 5) & 0x3F) << 2;   // 6 bits → 8 bits
+          // uint8_t old_b = (old_val & 0x1F) << 3;          // 5 bits → 8 bits
+          // uint8_t blended_r = (alpha * new_r + beta * old_r) >> 8;
+          // uint8_t blended_g = (alpha * new_g + beta * old_g) >> 8;
+          // uint8_t blended_b = (alpha * new_b + beta * old_b) >> 8;
+          // if (blended_r < old_r) blended_r = old_r;
+          // if (blended_g < old_g) blended_g = old_g;
+          // if (blended_b < old_b) blended_b = old_b;
+          // framebuffer[out_index] = RGB565(blended_r, blended_g, blended_b);
+          
+          // Doesn't do additive brightness quite like I want
+          // framebuffer[out_index] = alphablend(new_rgb, old_val, alpha, 0);
+
+          // Doesn't incorporate alpha, just does circles. Kinda oversaturated
+          // but cool bloomy-y effect.
+          uint8_t old_r = ((old_val >> 11) & 0x1F) << 3;  // 5 bits → 8 bits
+          uint8_t old_g = ((old_val >> 5) & 0x3F) << 2;   // 6 bits → 8 bits
+          uint8_t old_b = (old_val & 0x1F) << 3;          // 5 bits → 8 bits
+          framebuffer[out_index] = RGB565(min(old_r + new_r, 255), min(old_g + new_g, 255), min(old_b + new_b, 255));
         }
       }
     }
@@ -330,6 +375,7 @@ private:
   std::normal_distribution<float> m_r_dist;
   std::normal_distribution<float> m_z_dist;
   std::normal_distribution<float> m_speed_variance;
+  std::normal_distribution<float> m_out_of_plane_speed_dist;
   std::uniform_real_distribution<float> m_hue_dist;
   std::uniform_real_distribution<float> m_value_dist;
   std::uniform_real_distribution<float> m_saturation_dist;

@@ -16,7 +16,6 @@
         "-DCONFIG_SPIRAM_FETCH_INSTRUCTIONS=y",
         "-DCONFIG_SPIRAM_XIP_FROM_PSRAM=y",
         "-mfix-esp32-psram-cache-issue"
-
       ],
       "f_cpu": "240000000L",
       "f_flash": "80000000L",

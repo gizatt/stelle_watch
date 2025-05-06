@@ -62,10 +62,16 @@ void loop() {
 
     // Undraw previous pixels to save screen clearing time.
     uint16_t * framebuffer = gfx->getFramebuffer();
+    auto t_start = micros();
     sim->undraw_particles(framebuffer);
+    auto t_undraw = micros();
     // And draw new ones.
     sim->update_drawing_info();
+    auto t_projection = micros();
     sim->draw_particles(framebuffer);
+    auto t_draw = micros();
     gfx->flush();
+    auto t_flush = micros();
+    Serial.printf("Undraw %d, Project %d, Draw %d, Flush %d\n", t_undraw - t_start, t_projection - t_undraw, t_draw - t_projection, t_flush - t_draw);
   }
 }
