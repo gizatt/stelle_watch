@@ -42,8 +42,6 @@ void setup() {
   for (int i = 0; i < WIDTH*HEIGHT; i++){
     framebuffer[i] = nebula_bitmap[i];
   }
-  
-  sim->initialize_all_particles();
   start_t = get_now();
 }
 
