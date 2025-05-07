@@ -49,7 +49,8 @@ public:
         m_out_of_plane_speed_dist(0.0, 0.01),
         world_Q_planar(Eigen::Matrix3f::Identity()), m_hue_dist(0.6, 0.9),
         m_saturation_dist(0.0, 0.4), m_value_dist(0.2, 1.0), m_radii_dist(0.5),
-        m_focal_length(WIDTH / 2.0) {
+        m_focal_length(WIDTH / 2.0), m_gravity_scaling(1.0) {
+    m_gravity_center.setZero();
     initialize_sprites();
     set_normal_vector({0.5f, 1.0f, 0.85f});
     // Calculate projection matrix and info.
@@ -61,8 +62,19 @@ public:
 
     nebula_psram = (uint16_t *)ps_malloc(sizeof(nebula_bitmap));
     memcpy(nebula_psram, nebula_bitmap, sizeof(nebula_bitmap));
+  }
 
+  void set_gravity_scaling(float scaling){
+    m_gravity_scaling = scaling;
+  }
 
+  void set_gravity_center_from_screen_coords(int u, int v){
+    // Unproject
+    // uvz =  (m_R * m_focal_length) * xyz  + m_view_center;
+    // no idea why one direction is flipped... but this fixes
+    Vec3f uvz = Vec3f(WIDTH - u, v, 0);
+    m_gravity_center = (m_R * m_focal_length).inverse() * (uvz - m_view_center);
+    Serial.printf("Set gravity center to %f, %f, %f\n", m_gravity_center[0], m_gravity_center[1], m_gravity_center[2]);
   }
 
   void initialize_sprites() {
@@ -176,6 +188,7 @@ public:
       // This is terribly ugly but can I convince it to do no memory
       // reads/writes?
       float p0, p1, p2;
+      float dp0, dp1, dp2;
       float v0, v1, v2;
       for (int i = 0; i < N_PARTICLES; i++) {
 
@@ -183,27 +196,30 @@ public:
         int index = i * 3;
         // Get these reads going all in parallel.
         p0 = positions[index + 0];
+        dp0 = p0 - m_gravity_center[0];
         p1 = positions[index + 1];
+        dp1 = p1 - m_gravity_center[1];
         p2 = positions[index + 2];
+        dp2 = p2 - m_gravity_center[2];
         v0 = velocities[index + 0];
         v1 = velocities[index + 1];
         v2 = velocities[index + 2];
 
-        float r_norm_2 = p0 * p0 + p1 * p1 + p2 * p2 + PADDING * PADDING;
-        float force_scaling = -G * CENTER_MASS / (sqrt(r_norm_2) * r_norm_2);
+        float r_norm_2 = dp0 * dp0 + dp1 * dp1 + dp2 * dp2 + PADDING * PADDING;
+        float force_scaling = -m_gravity_scaling * G * CENTER_MASS / (sqrt(r_norm_2) * r_norm_2);
 
         // Integration math
-        float force = force_scaling * p0;
+        float force = force_scaling * dp0;
         v0 += dt * (force - v0 * VELOCITY_DAMPING);
         p0 += dt * v0;
         velocities[index + 0] = v0;
         positions[index + 0] = p0;
-        force = force_scaling * p1;
+        force = force_scaling * dp1;
         v1 += dt  * (force - v1 * VELOCITY_DAMPING);
         p1 += dt * v1;
         velocities[index + 1] = v1;
         positions[index + 1] = p1;
-        force = force_scaling * p2;
+        force = force_scaling * dp2;
         v2 += dt  * (force - v2 * VELOCITY_DAMPING);
         p2 += dt * v2;
         velocities[index + 2] = v2;
@@ -362,6 +378,8 @@ public:
 private:
   Eigen::Matrix3f world_Q_planar;
   Vec3f m_normal_vector;
+  Vec3f m_gravity_center;
+  float m_gravity_scaling;
 
   float m_focal_length;
   Vec3f m_view_center;
