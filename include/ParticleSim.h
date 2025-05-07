@@ -34,7 +34,7 @@ int16_t ages_ms[N_PARTICLES];
 
 // Pregenerated sprites of each radius up to the max radius. Sprite at index i
 // is size (ind*2+1)^2.
-constexpr int MAX_RADIUS = 6;
+constexpr int MAX_RADIUS = 5;
 uint8_t *sprites[MAX_RADIUS + 1];
 
 uint16_t *nebula_psram;
@@ -48,9 +48,9 @@ public:
         m_z_dist(0, 0.05f), m_speed_variance(1.0f, INITIAL_VELOCITY_VARIANCE),
         m_out_of_plane_speed_dist(0.0, 0.01),
         world_Q_planar(Eigen::Matrix3f::Identity()), m_hue_dist(0.6, 0.9),
-        m_saturation_dist(0.0, 0.4), m_value_dist(0.2, 1.0), m_radii_dist(0.5),
-        m_focal_length(WIDTH / 2.0), m_gravity_scaling(1.0) {
-    m_gravity_center.setZero();
+        m_saturation_dist(0.2, 1.0), m_value_dist(0.0, 0.4), m_radii_dist(0.5),
+        m_focal_length(WIDTH / 2.0), m_secondary_gravity_scaling(1.0) {
+    m_secondary_gravity_center.setZero();
     initialize_sprites();
     set_normal_vector({0.5f, 1.0f, 0.85f});
     // Calculate projection matrix and info.
@@ -64,17 +64,20 @@ public:
     memcpy(nebula_psram, nebula_bitmap, sizeof(nebula_bitmap));
   }
 
-  void set_gravity_scaling(float scaling){
-    m_gravity_scaling = scaling;
+  void set_secondary_gravity_scaling(float scaling) {
+    m_secondary_gravity_scaling = scaling;
   }
 
-  void set_gravity_center_from_screen_coords(int u, int v){
+  void set_secondary_gravity_center_from_screen_coords(int u, int v) {
     // Unproject
     // uvz =  (m_R * m_focal_length) * xyz  + m_view_center;
     // no idea why one direction is flipped... but this fixes
     Vec3f uvz = Vec3f(WIDTH - u, v, 0);
-    m_gravity_center = (m_R * m_focal_length).inverse() * (uvz - m_view_center);
-    Serial.printf("Set gravity center to %f, %f, %f\n", m_gravity_center[0], m_gravity_center[1], m_gravity_center[2]);
+    m_secondary_gravity_center =
+        (m_R * m_focal_length).inverse() * (uvz - m_view_center);
+    Serial.printf("Set gravity center to %f, %f, %f\n",
+                  m_secondary_gravity_center[0], m_secondary_gravity_center[1],
+                  m_secondary_gravity_center[2]);
   }
 
   void initialize_sprites() {
@@ -86,7 +89,8 @@ public:
       sprites[radius] = sprite;
       for (int u = 0; u < radius + 1; u++) {
         for (int v = 0; v < radius + 1; v++) {
-          uint8_t value = exp(-(u * u + v * v) / radius) * 255;
+          float x = exp(-(u * u + v * v) / (radius + 1));
+          uint8_t value = x * 255;
           sprite[uv_to_index(radius + u, radius + v, side_length)] = value;
           sprite[uv_to_index(radius + u, radius - v, side_length)] = value;
           sprite[uv_to_index(radius - u, radius + v, side_length)] = value;
@@ -161,8 +165,8 @@ public:
   void initialize_particle_unique_properties(int index) {
     // Initialize a random color.
     float h = m_hue_dist(m_gen);
-    float s = m_value_dist(m_gen);
-    float v = m_saturation_dist(m_gen);
+    float s = m_saturation_dist(m_gen);
+    float v = m_value_dist(m_gen);
     hsv2rgb(h, s, v, colors + index * 3);
 
     // Initialize its radius from a clipped geometric distribution. The
@@ -196,31 +200,40 @@ public:
         int index = i * 3;
         // Get these reads going all in parallel.
         p0 = positions[index + 0];
-        dp0 = p0 - m_gravity_center[0];
+        dp0 = p0 - m_secondary_gravity_center[0];
         p1 = positions[index + 1];
-        dp1 = p1 - m_gravity_center[1];
+        dp1 = p1 - m_secondary_gravity_center[1];
         p2 = positions[index + 2];
-        dp2 = p2 - m_gravity_center[2];
+        dp2 = p2 - m_secondary_gravity_center[2];
         v0 = velocities[index + 0];
         v1 = velocities[index + 1];
         v2 = velocities[index + 2];
 
+        // Calc force to the center and also the secondary gravity center with
+        // its scaling.
         float r_norm_2 = dp0 * dp0 + dp1 * dp1 + dp2 * dp2 + PADDING * PADDING;
-        float force_scaling = -m_gravity_scaling * G * CENTER_MASS / (sqrt(r_norm_2) * r_norm_2);
+        float r_norm_to_center_2 =
+            p0 * p0 + p1 * p1 + p2 * p2 + PADDING * PADDING;
+        float force_scaling = -m_secondary_gravity_scaling * G * CENTER_MASS /
+                              (sqrt(r_norm_2) * r_norm_2);
+        float force_scaling_to_center =
+            -G * CENTER_MASS / (sqrt(r_norm_to_center_2) * r_norm_to_center_2);
 
         // Integration math
-        float force = force_scaling * dp0;
+        float force = force_scaling * dp0 + force_scaling_to_center * p0;
         v0 += dt * (force - v0 * VELOCITY_DAMPING);
         p0 += dt * v0;
         velocities[index + 0] = v0;
         positions[index + 0] = p0;
-        force = force_scaling * dp1;
-        v1 += dt  * (force - v1 * VELOCITY_DAMPING);
+
+        force = force_scaling * dp1 + force_scaling_to_center * p1;
+        v1 += dt * (force - v1 * VELOCITY_DAMPING);
         p1 += dt * v1;
         velocities[index + 1] = v1;
         positions[index + 1] = p1;
-        force = force_scaling * dp2;
-        v2 += dt  * (force - v2 * VELOCITY_DAMPING);
+
+        force = force_scaling * dp2 + force_scaling_to_center * p2;
+        v2 += dt * (force - v2 * VELOCITY_DAMPING);
         p2 += dt * v2;
         velocities[index + 2] = v2;
         positions[index + 2] = p2;
@@ -260,54 +273,61 @@ public:
     // For large numbers of particles, particularly
     // with a lot of overlap, it's faster to just copy the background image
     // wholesale.
-    memcpy(framebuffer, nebula_psram, sizeof(nebula_bitmap));
-    // for (int i = 0; i < N_PARTICLES; i++) {
-    //   int radius = radii[i];
-    //   int side_length = radius * 2 + 1;
-    //   uint16_t u_center = pixel_positions[pixel_index + 0];
-    //   uint16_t v_center = pixel_positions[pixel_index + 1];
-    //   pixel_index += 3;
-    //   for (int du = 0; du < side_length; du++) {
-    //     uint16_t u = u_center + du - radius;
-    //     if (u < 0 || u >= WIDTH) {
-    //       continue;
-    //     }
-    //     for (int dv = 0; dv < side_length; dv++) {
-    //       uint16_t v = v_center + dv - radius;
-    //       if (v < 0 || v >= HEIGHT) {
-    //         continue;
-    //       }
-    //       int out_index = uv_to_index(u, v, WIDTH);
-    //       framebuffer[out_index] = 0;// nebula_bitmap[out_index];
-    //       n_accesses ++;
-    //     }
-    //   }
-    // }
-    // Serial.printf("%d accesses in undraw.\n", n_accesses);
+    //memcpy(framebuffer, nebula_psram, sizeof(nebula_bitmap));
+    for (int i = 0; i < N_PARTICLES; i++) {
+      int radius = radii[i];
+      int side_length = radius * 2 + 1;
+      uint16_t u_center = pixel_positions[pixel_index + 0];
+      uint16_t v_center = pixel_positions[pixel_index + 1];
+      pixel_index += 3;
+      for (int du = -radius; du < radius + 1; du++) {
+        uint16_t u = u_center + du;
+        // Since u is unsigned, not need for check with 0.
+        if (u >= WIDTH) {
+          continue;
+        }
+        for (int dv = -radius; dv < radius + 1; dv++) {
+          // Hacky circle, no sprite required. Saves us a few memory lookups
+          // in exchange for math.
+          if ((du * du + dv * dv) >= radius * radius) {
+            continue;
+          }
+          uint16_t v = v_center + dv;
+          if (v >= HEIGHT) {
+            continue;
+          }
+          int out_index = uv_to_index(u, v, WIDTH);
+          framebuffer[out_index] = nebula_bitmap[out_index];
+        }
+      }
+    }
   }
 
   void draw_particles(uint16_t *framebuffer) {
     int pixel_index = 0;
 
-    uint8_t fast_r = 1.0*255;
-    uint8_t fast_g = 0.7*255;
-    uint8_t fast_b = 0.5*255;
-      
+    uint8_t fast_r = 1.0 * 255;
+    uint8_t fast_g = 0.7 * 255;
+    uint8_t fast_b = 0.5 * 255;
 
     for (int i = 0; i < N_PARTICLES; i++) {
       float v0 = velocities[pixel_index + 0];
       float v1 = velocities[pixel_index + 1];
       float v2 = velocities[pixel_index + 2];
-      float speed_ratio = sqrt(v0 * v0 + v1 * v1 + v2 * v2) / (MAX_SPEED * 0.75f);
+      float speed_ratio =
+          sqrt(v0 * v0 + v1 * v1 + v2 * v2) / (MAX_SPEED * 0.75f);
       speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
       speed_ratio *= speed_ratio;
-      
+
       int radius = radii[i];
       int side_length = radius * 2 + 1;
-      uint8_t * sprite = sprites[radius];
-      uint8_t new_r = colors[pixel_index] * (1. - speed_ratio) + fast_r * speed_ratio;
-      uint8_t new_g = colors[pixel_index + 1] * (1. - speed_ratio) + fast_g * speed_ratio;
-      uint8_t new_b = colors[pixel_index + 2] * (1. - speed_ratio) + fast_b * speed_ratio;
+      uint8_t *sprite = sprites[radius];
+      uint8_t new_r =
+          colors[pixel_index] * (1. - speed_ratio) + fast_r * speed_ratio;
+      uint8_t new_g =
+          colors[pixel_index + 1] * (1. - speed_ratio) + fast_g * speed_ratio;
+      uint8_t new_b =
+          colors[pixel_index + 2] * (1. - speed_ratio) + fast_b * speed_ratio;
       uint16_t new_rgb = RGB565(new_r, new_g, new_b);
       uint16_t u_center = pixel_positions[pixel_index + 0];
       uint16_t v_center = pixel_positions[pixel_index + 1];
@@ -315,26 +335,47 @@ public:
       int sprite_index = 0;
       // framebuffer[uv_to_index(u_center, v_center, WIDTH)] = RGB565(255, 255,
       // 255); continue;
-      for (int du = -radius; du < radius+1; du++) {
+      // uint8_t age_scaling = 0;
+      // int age = min(ages_ms[i], MAX_AGE_MS - ages_ms[i]);
+      // if (age > 500){
+      //   age_scaling = 0;
+      // }  else if (age < 500 || age > MAX_AGE_MS - 500){
+      //   age_scaling = 1;
+      // } else if (age < 250 || age > MAX_AGE_MS - 250) {
+      //   age_scaling = 2;
+      // } else if (age < 125 || age > MAX_AGE_MS - 125) {
+      //   age_scaling = 3;
+      // } else {
+      //   age_scaling = 8; // don't render at all
+      // }
+
+      for (int du = -radius; du < radius + 1; du++) {
         uint16_t u = u_center + du;
-        if (u < 0 || u >= WIDTH) {
+        // Since u is unsigned, not need for check with 0.
+        if (u >= WIDTH) {
           continue;
         }
-        for (int dv = -radius; dv < radius; dv++) {
+        for (int dv = -radius; dv < radius + 1; dv++) {
           sprite_index++;
-          uint16_t v = v_center + dv;
-          if (v < 0 || v >= HEIGHT) {
+          // Hacky circle, no sprite required. Saves us a few memory lookups
+          // in exchange for math.
+          if ((du * du + dv * dv) >= radius * radius) {
             continue;
           }
-          if ((du * du + dv * dv) >= radius*radius) {
+          uint16_t v = v_center + dv;
+          if (v >= HEIGHT) {
             continue;
           }
           int out_index = uv_to_index(u, v, WIDTH);
-          uint8_t alpha = sprite[sprite_index - 1];
+          // uint8_t alpha = sprite[sprite_index - 1];
+          // if (alpha < 50){
+          //   continue;
+          // }
+
           uint16_t old_val = framebuffer[out_index];
 
           // Correct but slow
-          //uint8_t beta = (255 - alpha) >> 2;
+          // uint8_t beta = (255 - alpha) >> 2;
           // uint8_t old_r = ((old_val >> 11) & 0x1F) << 3;  // 5 bits → 8 bits
           // uint8_t old_g = ((old_val >> 5) & 0x3F) << 2;   // 6 bits → 8 bits
           // uint8_t old_b = (old_val & 0x1F) << 3;          // 5 bits → 8 bits
@@ -345,16 +386,18 @@ public:
           // if (blended_g < old_g) blended_g = old_g;
           // if (blended_b < old_b) blended_b = old_b;
           // framebuffer[out_index] = RGB565(blended_r, blended_g, blended_b);
-          
+
           // Doesn't do additive brightness quite like I want
           // framebuffer[out_index] = alphablend(new_rgb, old_val, alpha, 0);
 
           // Doesn't incorporate alpha, just does circles. Kinda oversaturated
           // but cool bloomy-y effect.
-          uint8_t old_r = ((old_val >> 11) & 0x1F) << 3;  // 5 bits → 8 bits
-          uint8_t old_g = ((old_val >> 5) & 0x3F) << 2;   // 6 bits → 8 bits
-          uint8_t old_b = (old_val & 0x1F) << 3;          // 5 bits → 8 bits
-          framebuffer[out_index] = RGB565(min(old_r + new_r, 255), min(old_g + new_g, 255), min(old_b + new_b, 255));
+          uint8_t old_r = ((old_val >> 11) & 0x1F) << 3; // 5 bits → 8 bits
+          uint8_t old_g = ((old_val >> 5) & 0x3F) << 2;  // 6 bits → 8 bits
+          uint8_t old_b = (old_val & 0x1F) << 3;         // 5 bits → 8 bits
+          framebuffer[out_index] =
+              RGB565(min(old_r + new_r, 255), min(old_g + new_g, 255),
+                     min(old_b + new_b, 255));
         }
       }
     }
@@ -378,8 +421,8 @@ public:
 private:
   Eigen::Matrix3f world_Q_planar;
   Vec3f m_normal_vector;
-  Vec3f m_gravity_center;
-  float m_gravity_scaling;
+  Vec3f m_secondary_gravity_center;
+  float m_secondary_gravity_scaling;
 
   float m_focal_length;
   Vec3f m_view_center;

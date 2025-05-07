@@ -65,6 +65,8 @@ void setup() {
 int n_frames = 0;
 double last_draw = 0.0;
 double last_read_tp = 0.0;
+bool needs_text_cleared = false;
+
 void loop() {
   double t = get_now();
 
@@ -72,8 +74,8 @@ void loop() {
     tp.read();
     if (tp.isTouched && tp.touches >= 1){
       // Set gravity to first touch point
-      sim->set_gravity_center_from_screen_coords(tp.points[0].x, tp.points[0].y);
-      sim->set_gravity_scaling(2.0);
+      sim->set_secondary_gravity_center_from_screen_coords(tp.points[0].x, tp.points[0].y);
+      sim->set_secondary_gravity_scaling(2.0);
       for (int i=0; i<tp.touches; i++){
         Serial.print("Touch ");Serial.print(i+1);Serial.print(": ");;
         Serial.print("  x: ");Serial.print(tp.points[i].x);
@@ -83,8 +85,8 @@ void loop() {
       }
     } else {
       // Reset gravity back to center.
-      sim->set_gravity_center_from_screen_coords(WIDTH/2, HEIGHT/2);
-      sim->set_gravity_scaling(1.0);
+      // sim->set_gravity_center_from_screen_coords(WIDTH/2, HEIGHT/2);
+      sim->set_secondary_gravity_scaling(0.0);
     }
   }
 
@@ -96,8 +98,24 @@ void loop() {
     double fps = n_frames / (t - start_t);
     Serial.printf("FPS: %.2f\n", fps);
 
-    // Undraw previous pixels to save screen clearing time.
+    // Draw text
     uint16_t * framebuffer = gfx->getFramebuffer();
+    if (t <= 10.0){
+      gfx->setRotation(3);
+      gfx->setCursor(WIDTH/2, 25);
+      gfx->printf("~~xen 2025~~");
+      gfx->setCursor(WIDTH/2, 35);
+      gfx->printf("battery: %0.2f v", analogReadMilliVolts(GPIO_NUM_4)*2. / 1000.);
+      needs_text_cleared = true;
+    } else if (needs_text_cleared){
+      // Remove remnant text by redrawing whole screen once.
+      for (int i = 0; i < WIDTH*HEIGHT; i++){
+        framebuffer[i] = nebula_bitmap[i];
+      }
+      needs_text_cleared = false;
+    }
+
+    // Undraw previous pixels to save screen clearing time.
     auto t_start = micros();
     sim->undraw_particles(framebuffer);
     auto t_undraw = micros();
@@ -107,18 +125,14 @@ void loop() {
     sim->draw_particles(framebuffer);
     auto t_draw = micros();
 
-    // Draw text
-    if (t <= 10.0){
-      gfx->setRotation(3);
-      gfx->setCursor(WIDTH/2, 25);
-      gfx->printf("%0.2f v", analogReadMilliVolts(GPIO_NUM_4)*2. / 1000.);
-    }
     // Debug: draw touch poitns
+    /*
     if (tp.isTouched && tp.touches >= 1){
       for (int i=0; i<tp.touches; i++){
         gfx->drawCircle(tp.points[i].x, tp.points[i].y, 10, RGB565(255, 255, 255));
       }
     }
+    */
 
     gfx->flush();
     auto t_flush = micros();
