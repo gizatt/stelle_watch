@@ -177,7 +177,6 @@ public:
       // reads/writes?
       float p0, p1, p2;
       float v0, v1, v2;
-      unsigned long now = micros();
       for (int i = 0; i < N_PARTICLES; i++) {
 
         // Force computation
@@ -209,19 +208,8 @@ public:
         p2 += dt * v2;
         velocities[index + 2] = v2;
         positions[index + 2] = p2;
-
-        // float speed_ratio =
-        //     sqrt(v0 * v0 + v1 * v1 + v2 * v2) / (MAX_SPEED * 0.5f);
-        // speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
-        // speed_ratio *= speed_ratio;
-        // // colors[index + 0] = 255 * 1.0f * speed_ratio;
-        // // colors[index + 1] = 255 * 0.5f * speed_ratio;
-        // // colors[index + 2] = 255 * (1.f - speed_ratio);
-
         ages_ms[i] += dt * 1000;
       }
-
-      Serial.printf("Elapsed %ums\n", (micros() - now) / 1000);
 
       if (t - last_resampling_update > RESAMPLING_DT) {
         last_resampling_update = t;
@@ -284,13 +272,26 @@ public:
 
   void draw_particles(uint16_t *framebuffer) {
     int pixel_index = 0;
+
+    uint8_t fast_r = 1.0*255;
+    uint8_t fast_g = 0.7*255;
+    uint8_t fast_b = 0.5*255;
+      
+
     for (int i = 0; i < N_PARTICLES; i++) {
+      float v0 = velocities[pixel_index + 0];
+      float v1 = velocities[pixel_index + 1];
+      float v2 = velocities[pixel_index + 2];
+      float speed_ratio = sqrt(v0 * v0 + v1 * v1 + v2 * v2) / (MAX_SPEED * 0.75f);
+      speed_ratio = std::max(std::min(speed_ratio, 1.0f), 0.0f);
+      speed_ratio *= speed_ratio;
+      
       int radius = radii[i];
       int side_length = radius * 2 + 1;
       uint8_t * sprite = sprites[radius];
-      uint8_t new_r = colors[pixel_index];
-      uint8_t new_g = colors[pixel_index + 1];
-      uint8_t new_b = colors[pixel_index + 2];
+      uint8_t new_r = colors[pixel_index] * (1. - speed_ratio) + fast_r * speed_ratio;
+      uint8_t new_g = colors[pixel_index + 1] * (1. - speed_ratio) + fast_g * speed_ratio;
+      uint8_t new_b = colors[pixel_index + 2] * (1. - speed_ratio) + fast_b * speed_ratio;
       uint16_t new_rgb = RGB565(new_r, new_g, new_b);
       uint16_t u_center = pixel_positions[pixel_index + 0];
       uint16_t v_center = pixel_positions[pixel_index + 1];

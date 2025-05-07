@@ -24,6 +24,7 @@ inline double get_now() { return ((double)millis()) / 1000.0f; }
 void setup() {
   Serial.begin(115200);
 
+  pinMode(GPIO_NUM_4, INPUT);
   pinMode(BACKLIGHT_PIN, OUTPUT);
   digitalWrite(BACKLIGHT_PIN, 0);
 
@@ -70,6 +71,13 @@ void loop() {
     auto t_projection = micros();
     sim->draw_particles(framebuffer);
     auto t_draw = micros();
+
+    // Draw text
+    if (t <= 10.0){
+      gfx->setRotation(3);
+      gfx->setCursor(WIDTH/2, 25);
+      gfx->printf("%0.2f v", analogReadMilliVolts(GPIO_NUM_4)*2. / 1000.);
+    }
     gfx->flush();
     auto t_flush = micros();
     Serial.printf("Undraw %d, Project %d, Draw %d, Flush %d\n", t_undraw - t_start, t_projection - t_undraw, t_draw - t_projection, t_flush - t_draw);

@@ -7,7 +7,7 @@ const double DRAW_DT = 1.0 / 20.0;
 const double RESAMPLING_DT = 0.05;
 
 // Sim parameters
-const int N_PARTICLES = 7000;
+const int N_PARTICLES = 5000;
 // Particles have unit mass.
 const float CENTER_MASS = 1000.0;
 const float G = 2e-5;
